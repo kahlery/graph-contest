@@ -1,0 +1,5 @@
+sakgd
+runs/
+data/*.out.json
+data/test*.json
+*.tmp
