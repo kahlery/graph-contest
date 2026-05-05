@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -153,7 +153,7 @@
   </header>
 
   <div class="summary" id="summary"></div>
-  <div class="grid" id="grid"><div class="empty">İlk durum bekleniyor…</div></div>
+  <div class="grid" id="grid"><div class="empty">Waiting for first status…</div></div>
 
 <script>
 const API_RUNS = "/api/runs";
@@ -178,8 +178,8 @@ function fmtSec(s) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const r = s % 60;
-  if (h > 0) return `${h}s ${String(m).padStart(2, "0")}d`;
-  return `${m}d ${String(r).padStart(2, "0")}sn`;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m ${String(r).padStart(2, "0")}s`;
 }
 
 function tempPercent(d) {
@@ -192,13 +192,13 @@ function tempPercent(d) {
 
 function phaseLabel(d) {
   if (!d) return "—";
-  if (d.state === "done") return "Bitti";
-  if (d.state === "starting") return "Hazırlık";
+  if (d.state === "done") return "Done";
+  if (d.state === "starting") return "Warm-up";
   switch (d.phase) {
-    case 0: return "Hazırlık";
-    case 1: return "Aşama 1: kesişim azaltma";
-    case 2: return "Aşama 2: k optimize";
-    case 3: return "Bitti";
+    case 0: return "Warm-up";
+    case 1: return "Phase 1: crossing reduction";
+    case 2: return "Phase 2: optimize k";
+    case 3: return "Done";
     default: return "—";
   }
 }
@@ -328,25 +328,25 @@ function createCard(run) {
       <span class="card-title">${run.id}</span>
       <span class="badge phase-badge phase-0" data-ref="phaseBadge">—</span>
       <span class="badge" data-ref="aliveBadge"></span>
-      <span class="badge badge-best" data-ref="bestBadge" style="display:none">en iyi</span>
+      <span class="badge badge-best" data-ref="bestBadge" style="display:none">best</span>
     </div>
     <div class="stats">
       <span class="lbl">k</span>          <span class="val" data-ref="k">—</span>
-      <span class="lbl">en iyi k</span>   <span class="val best" data-ref="bestK">—</span>
-      <span class="lbl">toplam kesişim</span> <span class="val" data-ref="totalX">—</span>
-      <span class="lbl">en iyi toplam</span> <span class="val best" data-ref="bestX">—</span>
-      <span class="lbl">hareket</span>    <span class="val" data-ref="moves">—</span>
-      <span class="lbl">kabul oranı</span> <span class="val" data-ref="acceptRate">—</span>
-      <span class="lbl">sıcaklık</span>     <span class="val" data-ref="currentTemp">—</span>
+      <span class="lbl">best k</span>   <span class="val best" data-ref="bestK">—</span>
+      <span class="lbl">total crossings</span> <span class="val" data-ref="totalX">—</span>
+      <span class="lbl">best total</span> <span class="val best" data-ref="bestX">—</span>
+      <span class="lbl">moves</span>    <span class="val" data-ref="moves">—</span>
+      <span class="lbl">accept rate</span> <span class="val" data-ref="acceptRate">—</span>
+      <span class="lbl">temperature</span>     <span class="val" data-ref="currentTemp">—</span>
       <span class="lbl">limit</span>      <span class="val" data-ref="tempLimit">—</span>
     </div>
-    <div class="progress" title="aşama süresi">
-      <span>aşama</span>
+    <div class="progress" title="phase time">
+      <span>phase</span>
       <div class="bar"><div data-ref="timeBar" style="width:0%; background:var(--good);"></div></div>
       <span class="end" data-ref="timeLabel">—</span>
     </div>
-    <div class="progress" title="sıcaklık (log ölçek)">
-      <span>sıcaklık</span>
+    <div class="progress" title="temperature (log scale)">
+      <span>temperature</span>
       <div class="bar"><div data-ref="tempBar" style="width:0%; background:var(--p1);"></div></div>
       <span class="end">log T</span>
     </div>
@@ -394,10 +394,10 @@ function updateCard(entry, run, isGlobalBest) {
   if (aliveBadge) {
     if (dead) {
       aliveBadge.className = "badge badge-dead";
-      aliveBadge.innerHTML = `çıktı: ${run.exit_code ?? "?"}`;
+      aliveBadge.innerHTML = `exit: ${run.exit_code ?? "?"}`;
     } else {
       aliveBadge.className = "badge badge-alive";
-      aliveBadge.innerHTML = `<span class="pulse"></span>çalışıyor`;
+      aliveBadge.innerHTML = `<span class="pulse"></span>running`;
     }
   }
 
@@ -444,7 +444,7 @@ async function tick() {
       fetch(API_INFO, { cache: "no-store" }).then((r) => r.json()).catch(() => null),
     ]);
   } catch (e) {
-    document.getElementById("meta").textContent = "sunucu yanıt vermiyor";
+    document.getElementById("meta").textContent = "server not responding";
     return;
   }
 
@@ -468,34 +468,34 @@ async function tick() {
 
   // Header / summary.
   document.getElementById("meta").textContent =
-    (info ? `girdi: ${info.input}  •  ` : "") +
-    `${runs.length} koşu  •  güncelleme: ${new Date().toLocaleTimeString()}`;
+    (info ? `input: ${info.input}  •  ` : "") +
+    `${runs.length} ${runs.length === 1 ? "run" : "runs"}  •  updated: ${new Date().toLocaleTimeString()}`;
 
   const summary = document.getElementById("summary");
   const acceptRate = totalMoves > 0 ? (totalAccepts / totalMoves) * 100 : 0;
   summary.innerHTML = `
     <div class="sumcell">
-      <span class="lbl">aktif</span>
+      <span class="lbl">active</span>
       <span class="val">${alive} / ${runs.length}</span>
     </div>
     <div class="sumcell">
-      <span class="lbl">en iyi k</span>
+      <span class="lbl">best k</span>
       <span class="val good">${bestK === Infinity ? "—" : fmt(bestK)}</span>
     </div>
     <div class="sumcell">
-      <span class="lbl">en iyi toplam kesişim</span>
+      <span class="lbl">best total crossings</span>
       <span class="val good">${bestX === Infinity ? "—" : fmt(bestX)}</span>
     </div>
     <div class="sumcell">
-      <span class="lbl">en iyiyi veren</span>
+      <span class="lbl">best run</span>
       <span class="val muted">${bestId}</span>
     </div>
     <div class="sumcell">
-      <span class="lbl">toplam hareket</span>
+      <span class="lbl">total moves</span>
       <span class="val">${fmt(totalMoves)}</span>
     </div>
     <div class="sumcell">
-      <span class="lbl">toplam kabul oranı</span>
+      <span class="lbl">total accept rate</span>
       <span class="val">${fmt(acceptRate, 1)}%</span>
     </div>
   `;
@@ -503,7 +503,7 @@ async function tick() {
   // Cards — incremental update.
   const grid = document.getElementById("grid");
   if (runs.length === 0) {
-    grid.innerHTML = `<div class="empty">Çalışan bir koşu yok.</div>`;
+    grid.innerHTML = `<div class="empty">No active runs.</div>`;
     cardMap.clear();
     return;
   }

@@ -71,12 +71,12 @@ def ask(prompt: str, default=None, parser=str, validate=None, allow_empty=False)
                 return default
             if allow_empty:
                 return ""
-            print("  -> Boş bırakılamaz.")
+            print("  -> Cannot be empty.")
             continue
         try:
             value = parser(raw)
         except Exception as e:
-            print(f"  -> Geçersiz değer: {e}")
+            print(f"  -> Invalid value: {e}")
             continue
         if validate is not None:
             err = validate(value)
@@ -88,30 +88,30 @@ def ask(prompt: str, default=None, parser=str, validate=None, allow_empty=False)
 
 def prompt_args() -> Namespace:
     print("=" * 56)
-    print("  SAkGD Dashboard - interaktif mod")
-    print("  (Enter = varsayılan değer, Ctrl+C = iptal)")
+    print("  SAkGD Dashboard - interactive mode")
+    print("  (Enter = default, Ctrl+C = cancel)")
     print("=" * 56)
 
     graphs = list_input_graphs()
     if graphs:
-        print("\nMevcut graf dosyaları:")
+        print("\nAvailable graph files:")
         for i, g in enumerate(graphs, 1):
             try:
                 size_kb = g.stat().st_size / 1024
                 print(f"  {i}) {g.name}  ({size_kb:.1f} KB)")
             except OSError:
                 print(f"  {i}) {g.name}")
-        print(f"  0) elle yol gir")
+        print(f"  0) enter path manually")
         choice = ask(
-            "Girdi grafı seç",
+            "Select input graph",
             default="1",
             parser=str,
         )
         if choice == "0":
             input_file = ask(
-                "Girdi JSON yolu",
+                "Input JSON path",
                 parser=lambda s: str(Path(s).expanduser()),
-                validate=lambda s: None if Path(s).exists() else "dosya bulunamadı",
+                validate=lambda s: None if Path(s).exists() else "file not found",
             )
         else:
             try:
@@ -119,58 +119,59 @@ def prompt_args() -> Namespace:
                 input_file = str(graphs[idx])
             except (ValueError, IndexError):
                 input_file = ask(
-                    "Girdi JSON yolu",
+                    "Input JSON path",
                     parser=lambda s: str(Path(s).expanduser()),
-                    validate=lambda s: None if Path(s).exists() else "dosya bulunamadı",
+                    validate=lambda s: None if Path(s).exists() else "file not found",
                 )
     else:
-        print("\n(data/ dizininde graf bulunamadı)")
+        print("\n(No graphs found in data/)")
         input_file = ask(
-            "Girdi JSON yolu",
+            "Input JSON path",
             parser=lambda s: str(Path(s).expanduser()),
-            validate=lambda s: None if Path(s).exists() else "dosya bulunamadı",
+            validate=lambda s: None if Path(s).exists() else "file not found",
         )
 
     print()
     workers = ask(
-        "Paralel worker sayısı",
+        "Number of parallel workers",
         default=4, parser=int,
-        validate=lambda v: None if 1 <= v <= 64 else "1 ile 64 arasında olmalı",
+        validate=lambda v: None if 1 <= v <= 64 else "must be between 1 and 64",
     )
     minutes = ask(
-        "Toplam süre (dakika, her worker icin)",
+        "Total time budget (minutes, per worker)",
         default=2.0, parser=float,
-        validate=lambda v: None if v > 0 else "pozitif olmalı",
+        validate=lambda v: None if v > 0 else "must be positive",
     )
     p1_default = round(min(minutes / 3.0, 10.0), 2)
     p1_minutes = ask(
-        "Asama 1 (kesisim azaltma) suresi (dakika)",
+        "Phase 1 (crossing reduction) time (minutes)",
         default=p1_default, parser=float,
-        validate=lambda v: None if 0 < v < minutes else f"0 ile {minutes} arasında olmalı",
+        validate=lambda v: None if 0 < v < minutes else f"must be > 0 and < {minutes} minutes",
     )
 
     suggested_port = find_free_port(8765)
     port = ask(
         "HTTP port",
         default=suggested_port, parser=int,
-        validate=lambda v: None if 1024 <= v <= 65535 else "1024-65535 arasında olmalı",
+        validate=lambda v: None if 1024 <= v <= 65535 else "must be between 1024 and 65535",
     )
     if not is_port_free(port):
         alt = find_free_port(port + 1)
-        print(f"  -> Port {port} dolu, {alt} kullanılacak.")
+        print(f"  -> Port {port} is in use, using {alt}.")
         port = alt
 
-    seed = ask("Taban RNG seed", default=42, parser=int)
+    seed = ask("Base RNG seed", default=42, parser=int)
 
     open_browser = ask(
-        "Tarayıcıyı otomatik aç? (e/h)",
-        default="e", parser=str,
-        validate=lambda v: None if v.lower() in ("e", "h", "y", "n") else "e veya h",
+        "Open browser automatically? (y/n)",
+        default="y", parser=str,
+        validate=lambda v: None
+        if v.lower() in ("e", "h", "y", "n") else "y or n (e/h also accepted)",
     )
     no_open = open_browser.lower() in ("h", "n")
 
     print()
-    print("Ayarlar onaylandı, başlatılıyor...")
+    print("Settings confirmed, starting...")
     print()
 
     return Namespace(
