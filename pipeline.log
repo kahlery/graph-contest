@@ -1,0 +1,78 @@
+[02:18:15] Pipeline starting — will run until 23:00
+[02:18:15] Graphs   : Automatic-1, Automatic-2, Automatic-3, Automatic-4, Automatic-5, Automatic-6, Automatic-7, Automatic-8, Automatic-9
+[02:18:15] Workers  : 4 × 60 min (phase1=10 min)
+[02:18:15] Results  : /Users/amine/GraphContestSAkGD/results
+[02:18:15] ------------------------------------------------------------
+[02:18:15] Seeded Automatic-1 from existing export: Automatic-1_exported.json
+[02:18:15] Seeded Automatic-2 from existing export: Automatic-2_exported.json
+[02:18:15] Seeded Automatic-3 from existing export: Automatic-3_exported.json
+[02:18:15] Seeded Automatic-4 from existing export: Automatic-4_exported.json
+[02:18:15] Seeded Automatic-5 from existing export: Automatic-5_exported.json
+[02:18:15] Seeded Automatic-6 from existing export: Automatic-6_exported.json
+[02:18:15] Seeded Automatic-9 from existing export: 7.json
+[02:18:15] Starting best for Automatic-1: k=16, X=660
+[02:18:15] Starting best for Automatic-2: k=6, X=197
+[02:18:15] Starting best for Automatic-3: k=111, X=6092
+[02:18:15] Starting best for Automatic-4: k=13, X=972
+[02:18:15] Starting best for Automatic-5: k=129, X=53655
+[02:18:16] Starting best for Automatic-6: k=1186, X=684622
+[02:18:16] Starting best for Automatic-9: k=23, X=9937
+[02:18:16] === Round 1  (seeds 100–103) ===
+[02:18:16] [Automatic-1] Round 1 starting  (best so far: k=16, X=660)
+[02:18:16] [Automatic-1] Input: Automatic-1_best.json
+[02:24:50]   worker seed=100: k=9, X=408
+[02:24:50]   worker seed=101: k=9, X=405
+[02:24:50]   worker seed=102: k=9, X=412
+[02:24:50]   worker seed=103: k=9, X=397
+[02:24:50] [Automatic-1] Round 1 best: k=9, X=397
+[02:24:50] [Automatic-1] *** NEW BEST (k 16→9, X=397) saved ***
+[02:24:50] [Automatic-2] Round 1 starting  (best so far: k=6, X=197)
+[02:24:50] [Automatic-2] Input: Automatic-2_best.json
+[02:28:15]   worker seed=100: k=4, X=113
+[02:28:15]   worker seed=101: k=4, X=114
+[02:28:15]   worker seed=102: k=4, X=111
+[02:28:15]   worker seed=103: k=4, X=112
+[02:28:15] [Automatic-2] Round 1 best: k=4, X=111
+[02:28:15] [Automatic-2] *** NEW BEST (k 6→4, X=111) saved ***
+[02:28:15] [Automatic-3] Round 1 starting  (best so far: k=111, X=6092)
+[02:28:15] [Automatic-3] Input: Automatic-3_best.json
+[02:49:53]   worker seed=100: k=39, X=3718
+[02:49:53]   worker seed=101: k=41, X=4203
+[02:49:53]   worker seed=102: k=39, X=4009
+[02:49:53]   worker seed=103: k=39, X=4022
+[02:49:53] [Automatic-3] Round 1 best: k=39, X=3718
+[02:49:53] [Automatic-3] *** NEW BEST (k 111→39, X=3718) saved ***
+[02:49:53] [Automatic-4] Round 1 starting  (best so far: k=13, X=972)
+[02:49:53] [Automatic-4] Input: Automatic-4_best.json
+[02:54:47]   worker seed=100: k=8, X=550
+[02:54:47]   worker seed=101: k=7, X=652
+[02:54:47]   worker seed=102: k=7, X=628
+[02:54:47]   worker seed=103: k=8, X=698
+[02:54:47] [Automatic-4] Round 1 best: k=7, X=628
+[02:54:47] [Automatic-4] *** NEW BEST (k 13→7, X=628) saved ***
+[02:54:47] [Automatic-5] Round 1 starting  (best so far: k=129, X=53655)
+[02:54:47] [Automatic-5] Input: Automatic-5_best.json
+[03:54:47]   worker seed=100: k=91, X=48329
+[03:54:47]   worker seed=101: k=93, X=44583
+[03:54:47]   worker seed=102: k=92, X=43264
+[03:54:47]   worker seed=103: k=92, X=43361
+[03:54:47] [Automatic-5] Round 1 best: k=91, X=48329
+[03:54:47] [Automatic-5] *** NEW BEST (k 129→91, X=48329) saved ***
+[03:54:47] [Automatic-6] Round 1 starting  (best so far: k=1186, X=684622)
+[03:54:47] [Automatic-6] Input: Automatic-6_best.json
+[04:54:49]   worker seed=100: k=653, X=521247
+[04:54:50]   worker seed=101: k=618, X=484222
+[04:54:50]   worker seed=102: k=656, X=518469
+[04:54:50]   worker seed=103: k=669, X=531220
+[04:54:50] [Automatic-6] Round 1 best: k=618, X=484222
+[04:54:50] [Automatic-6] *** NEW BEST (k 1186→618, X=484222) saved ***
+[04:54:50] [Automatic-7] Round 1 starting  (best so far: none)
+[04:54:50] [Automatic-7] Input: Automatic-7.json
+[05:12:02]   worker seed=100: k=65, X=21216
+[05:12:02]   worker seed=101: k=66, X=22003
+[05:12:02]   worker seed=102: k=50, X=17233
+[05:12:02]   worker seed=103: k=70, X=23896
+[05:12:02] [Automatic-7] Round 1 best: k=50, X=17233
+[05:12:02] [Automatic-7] *** NEW BEST (first result, X=17233) saved ***
+[05:12:02] [Automatic-8] Round 1 starting  (best so far: none)
+[05:12:02] [Automatic-8] Input: Automatic-8.json
