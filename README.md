@@ -1,237 +1,196 @@
-# SAkGD — 2025 Graph Drawing Contest k-planarity Çözücüsü (C++)
+# SAkGD — Graph Drawing Contest k-planarity Solver
 
-Bu proje, Bianchetti & Moalic'in 2025 GD Contest'ini kazanan **SAkGD** yaklaşımının
-([LIPIcs.GD.2025.43](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.GD.2025.43))
-sıfırdan yazılmış, harici bağımlılığı olmayan bir C++ uyarlamasıdır.
+Minimises the **k-value** of a straight-line graph drawing — the maximum number of
+times any single edge is crossed by other edges.
 
-> Verilen bir grafın düz çizgili çiziminde, bir kenarın kesiştiği başka kenar sayısının
-> maksimumuna **k-değer** (k-planarlık parametresi) denir. Amaç bu k-değerini
-> minimize etmektir.
+Based on: Bianchetti & Moalic, *"Winning the GD Challenge for the 4th Time"*,
+GD 2025 ([LIPIcs.GD.2025.43](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.GD.2025.43)).
 
-## Yaklaşım (paper'ı birebir izler)
+---
 
-Üç aşamalı bir meta-sezgisel:
+## Problem
 
-1. **Aşama 1 — Başlangıç çizimi**
-   Girdi JSON dosyasındaki konumlar başlangıç çözümü olarak alınır. (Paper, OGDF'in
-   Stress-Minimization ve FMMM algoritmalarını da deniyor; bu uyarlama bağımsızlık
-   için OGDF'siz çalışır, fakat girdiyi olduğu gibi başlangıç olarak kullanır.)
+Given a graph, place every node at an integer coordinate so that no two nodes
+share a point and no node lies on the interior of an edge it does not belong to.
+Minimise **k = max crossings on any single edge**, breaking ties by total crossing count.
 
-2. **Aşama 2 — Toplam kesişimi azaltan SA** (varsayılan 10 dk)
-   Algoritma 1'in iskeletinde, fitness olarak **toplam kesişim sayısındaki değişim**
-   `ΔC` kullanılır. Kötüleşen hareket `exp(-ΔC / T)` olasılığıyla kabul edilir.
-   Parametreler (Tablo 1): `T0=50`, `decT=0.999`, `decTW=0.99`, `tLim=0.01`.
+---
 
-3. **Aşama 3 — k-değerini optimize eden SA** (kalan süre)
-   Aynı SA iskeletinde, fitness olarak iki katmanlı bir kriter kullanılır:
-   - **Birincil**: hareketle "etkilenen" kenarlardaki yerel max kesişim sayısının değişimi
-     (taşınan düğümün komşu kenarları + onları kesen kenarlar).
-   - **İkincil (kopukluk durumunda)**: toplam kesişim sayısındaki değişim.
-   Parametreler: `T0=1`, `decT=0.9999`, `decTW=0.99`, `tLim=0.01`.
+## Files
 
-`selectNode()` ve `selectPlace()` paper'ın tarif ettiği gibi:
+| File | Description |
+|------|-------------|
+| `src/main.cpp` | Original solver (`./sakgd`) — Simulated Annealing only. JSON parser and spatial grid included; no external dependencies. |
+| `src/approach1_lns.cpp` | Approach 1 solver (`./approach1`) — adds Large Neighbourhood Search on top of the same SA infrastructure. Supports `--mode sa` (identical to `./sakgd`) and `--mode lns`. |
+| `dashboard.py` | Runs multiple solver workers in parallel and serves a live browser dashboard. |
+| `pipeline.py` | Overnight batch runner: cycles through all 9 contest graphs, warm-starting each round from the previous best output. |
+| `dashboard/index.html` | Vanilla-JS frontend for the live dashboard. |
+| `data/` | Input graphs (JSON) and example solutions. |
+| `results/` | Best outputs per contest graph, plus per-run logs. |
+| `Makefile` | `make` / `make debug` / `make clean`. |
 
-- **selectNode**: çok kesişen kenarlara sahip düğümlere yüksek olasılık verilir
-  (ağırlık ≈ `1 + Σ kesişim_sayısı(e)`). Düğüm seçimi kümülatif ağırlık dizisi
-  üzerinde ikili arama ile yapılır.
-- **selectPlace**: yeni konum, mevcut konumun etrafında bir Gauss dağılımından
-  örneklenir (sıcaklığa bağlı σ). Yerel optimumdan kaçmak için %5 olasılıkla
-  uniform global örnekleme yapılır (Aşama 1'de).
+---
 
-### Çözüm geçerliliği (yarışma kuralları)
+## Algorithms
 
-Bu çözücü iki ayrık geometrik kısıtı **her hareket öncesi** zorlar — geçersiz
-bir çözümün hiçbir zaman kabul edilmemesini garanti eder:
+Both algorithms share the same two-phase structure and validity checks.
 
-1. **Vertex tekilliği**: hiçbir iki düğüm aynı tam-sayı koordinatında olamaz.
-2. **Vertex-edge overlap yasağı**: hiçbir düğüm, ait olmadığı bir kenarın iç
-   noktasında olamaz (kollineer ve segment içinde). Aksi halde o kenarın
-   "kesişim sayısı" belirsizleşir ve yarışma doğrulayıcısı çözümü reddeder.
+### Phase 1 — Minimise total crossings
 
-Her ikisi de:
-- `setup()` aşamasında: girdi geçersizse küçük perturbasyonlarla çözülür.
-- `runSA()` döngüsünde: ihlali olan hareket düşük-maliyetle reddedilir
-  (planlanmaz bile).
-- Çıkış öncesi: en iyi çözümün geçerli olduğu son bir kez doğrulanır
-  (`vertexEdgeOverlap=no`).
+Fitness = change in total crossing count `ΔC`.
+A worsening move is accepted with probability `exp(−ΔC / T)`.
 
-`./sakgd --verify dosya.json` çıktısında bu kontrolün sonucu da basılır
-(geçerli ise `no`, geçersiz ise `yes` ve exit code 2).
+### Phase 2 — Minimise k-value
 
-### Performans optimizasyonları
+Dual-level fitness:
+- Primary: change in the local max crossing count among incident edges and their
+  crossing partners.
+- Tie-breaker: change in total crossing count (normalised).
 
-- **Spatial grid**: tüm `O(m²)` kesişim taramasından kaçınmak için, kenarlar
-  bounding-box'larına göre hücrelere kaydedilir. Bir kenar taşındığında yalnızca
-  ilgili hücrelerdeki adaylar test edilir.
-- **İnkremental kesişim takibi**: her kenarın kesişen kenar kümesi `xs[e]`,
-  kesişim sayacı `xc[e]`, toplam kesişim `totalX`, ve `cntPerK[k]` üzerinden
-  global k güncellenir; tam yeniden hesap yalnızca her dalga sonunda yapılır.
-- **Plan→commit modeli**: önce hareket simüle edilir (state'e dokunulmaz), kabul
-  edilirse uygulanır. Reddedilen hareketin geri alınması bedava (commit yapılmaz).
+---
 
-## Derleme
+### SA — Simulated Annealing (default, `--mode sa`)
+
+Classic single-node SA following the paper (Algorithm 1):
+
+- **Node selection** — biased toward nodes with many crossings on incident edges
+  (weight ≈ `1 + Σ xc[e]`).
+- **Position selection** — Gaussian around the current position (`σ ∝ √(T/T₀)`),
+  with a 5 % chance of a global random jump in Phase 1.
+- **Wave restarts** — temperature is reset each wave; layout is restored from the
+  best-known solution at the start of each wave.
+
+Parameters (paper Table 1):
+
+| Phase | T₀ | decT | decTW | tLim |
+|-------|-----|------|-------|------|
+| 1 (crossings) | 50 | 0.999 | 0.99 | 0.01 |
+| 2 (k-value)   | 1  | 0.9999 | 0.99 | 0.01 |
+
+---
+
+### LNS — Large Neighbourhood Search (`--mode lns`)
+
+Approach 1. Moves a connected *group* of nodes per iteration rather than one
+at a time, which lets it escape local optima that SA can get stuck in.
+
+**Destroy** — select a BFS-connected neighbourhood of K nodes starting from a
+crossing-weight-biased seed.
+
+**Repair** — for each node in the neighbourhood (shuffled), try R random candidate
+positions and greedily commit the best strictly-improving one.
+
+**Restart** — every `500/K` iterations, snap back to the best-known layout to
+prevent quality drift.
+
+The temperature controls the Gaussian exploration radius (same `selectPlace` as SA)
+and decays geometrically from `T₀` to `tLim` over the phase budget.
+
+---
+
+## Build
 
 ```bash
-make           # release (-O3 -DNDEBUG)
-make debug     # debug + ASAN/UBSAN
+make           # builds both ./sakgd and ./approach1  (-O3)
+make debug     # debug build with ASAN/UBSAN
+make clean
 ```
 
-Standart bir GCC veya Clang yeterlidir; harici kütüphane yok.
+Requires only a C++17 compiler (GCC or Clang). No external libraries.
 
-## Kullanım
+---
+
+## Usage
 
 ```bash
-# Yarışma standardı: toplam 60 dk, ilk 10 dk Aşama 1
-./sakgd -i input.json -o output.json -t 60 -p1 10
+# SA — 60 min total, 10 min phase 1
+./sakgd -i data/graph.json -o out.json -t 60 -p1 10
 
-# Pozisyonel kısa yol (varsayılanlar 60 / 10):
-./sakgd input.json output.json
+# LNS (Approach 1) — same timing
+./approach1 -i data/graph.json -o out.json -t 60 -p1 10 --mode lns
 
-# Sadece doğrulama (kesişim ve k raporlar):
-./sakgd --verify output.json
+# LNS with explicit neighbourhood size and candidates
+./approach1 -i data/625-nodes.json -o out.json --mode lns --nh-size 30 --nh-cands 100
 
-# Tekrarlanabilir koşu için seed:
-./sakgd -i input.json -o output.json -s 12345
+# SA via approach1 (identical result to ./sakgd)
+./approach1 -i data/graph.json -o out.json --mode sa
+
+# Verify a solution (reports k, total crossings, validity)
+./sakgd --verify out.json
+
+# Reproducible run
+./sakgd -i data/graph.json -o out.json -s 12345
 ```
 
-### Girdi/çıktı JSON formatı
+### Shared flags (`./sakgd` and `./approach1`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-i PATH` | — | Input JSON |
+| `-o PATH` | `<input>.out.json` | Output JSON |
+| `-t MINUTES` | 60 | Total time budget |
+| `-p1 MINUTES` | 10 | Phase 1 budget |
+| `-s SEED` | time-based | RNG seed |
+| `--status-file PATH` | — | Write live status JSON (for dashboard) |
+| `--status-id STRING` | `run` | Label shown in the dashboard |
+| `--status-interval SEC` | `1.0` | Status write interval |
+| `--verify` | — | Report metrics and exit |
+
+### `./approach1`-only flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mode {sa\|lns}` | `sa` | Algorithm to run |
+| `--nh-size K` | `n/10` | LNS neighbourhood size |
+| `--nh-cands R` | `50` | LNS candidate positions per node |
+
+---
+
+## Dashboard (parallel runs + live UI)
+
+```bash
+# Interactive — prompts for graph, workers, time
+./dashboard.py
+
+# CLI — 4 workers, 60 min each
+./dashboard.py data/graph.json -n 4 -t 60 -p1 10
+```
+
+Opens a browser tab showing live crossing counts, k-values, temperature progress,
+and a mini SVG preview for each worker. The best result across workers is
+highlighted.
+
+---
+
+## Pipeline (overnight batch)
+
+```bash
+# Run all 9 contest graphs, 4 workers each, until 23:00
+python3 pipeline.py --graphs 1-9 --workers 4 --minutes 60 --until 23:00
+```
+
+Each round warm-starts from the previous best output stored in `results/`.
+
+---
+
+## JSON format
 
 ```json
 {
-  "width": 1000000,
-  "height": 1000000,
-  "nodes": [
-    { "id": 0, "x": 100, "y": 200 },
-    ...
-  ],
-  "edges": [
-    { "source": 0, "target": 1 },
-    ...
-  ]
+  "width": 1000000, "height": 1000000,
+  "nodes": [ { "id": 0, "x": 100, "y": 200 }, ... ],
+  "edges": [ { "source": 0, "target": 1 }, ... ]
 }
 ```
 
-`id` alanı string veya sayı olabilir. `x` ve `y` her düğüm için verildiğinde
-başlangıç düzenlemesi olarak kullanılır; eksikse rastgele atanır. Çıktı dosyası
-girdi yapısını koruyup yalnızca `nodes[*].x` ve `nodes[*].y`'yi günceller.
+`id` may be a string or a number. If `x`/`y` are present they are used as the
+initial layout; otherwise nodes are placed randomly. The output preserves the
+full input structure, updating only `nodes[*].x` and `nodes[*].y`.
 
-## Doğrulama (test örnekleri)
+---
 
-`data/k5.json` ve `data/k6.json` küçük tam graflar:
+## Reference
 
-| Graf | Bilinen optimum k | Bilinen optimum toplam kesişim | Bu kod |
-|------|--------------------|--------------------------------|--------|
-| K5   | 1                  | 1                              | k=1, X=1 ✓ |
-| K6   | 1                  | 3                              | k=1, X=3 ✓ |
-
-```bash
-./sakgd -i data/k5.json -o data/k5.out.json -t 0.2 -p1 0.05
-./sakgd --verify data/k5.out.json
-```
-
-## Canlı Web Arayüzü (dashboard)
-
-Birden fazla SA denemesini paralel çalıştırıp her birinin **hangi aşamada
-olduğunu** ve mevcut en iyi sonucu canlı izleyebileceğiniz bir tarayıcı
-arayüzü.
-
-### İnteraktif mod (en kolayı)
-
-Argümansız çalıştırınca tüm parametreler tek tek sorulur:
-
-```bash
-./dashboard.py
-```
-
-Her soruda Enter'a basarak varsayılan değeri kabul edebilirsin. Akıllı
-varsayılanlar:
-
-- `data/` dizinindeki tüm `.json` graflar listelenir; numara seç veya
-  elle yol gir.
-- Toplam ve Aşama 1 süreleri için makul varsayılanlar.
-- HTTP portu: 8765 dolu ise otomatik olarak boş bir port önerilir.
-- Tarayıcı otomatik açma seçeneği (`e` / `h`).
-
-İnteraktif moda zorlamak için (CLI argümanlarıyla birlikte) `-I` /
-`--interactive` da kullanılabilir.
-
-### CLI modu
-
-```bash
-./dashboard.py data/random30.json -n 4 -t 2 -p1 0.4
-```
-
-Argümanlar:
-
-| Bayrak | Anlamı | Varsayılan |
-|--------|--------|-----------|
-| `-n / --workers` | paralel SA çalışan sayısı | 4 |
-| `-t / --minutes` | her bir çalışan için toplam süre (dk) | 60 |
-| `-p1 / --phase1-minutes` | her bir çalışanın Aşama 1 süresi (dk) | 10 |
-| `-p / --port` | HTTP sunucu portu | 8765 |
-| `--seed` | taban seed (çalışan N → seed+N kullanır) | 42 |
-| `--out-dir` | çıktı / status dosyaları dizini | `runs/` |
-| `--status-interval` | status JSON yazma aralığı (sn) | 1.0 |
-| `--no-open` | tarayıcıyı otomatik açma | |
-
-Arayüzde her çalışan için bir kart vardır:
-
-- **Faz rozeti**: `Aşama 1: kesişim azaltma` (mavi) ↔ `Aşama 2: k optimize`
-  (mor) ↔ `Bitti` (yeşil).
-- **Canlı / Bitti rozeti**: yanıp sönen yeşil = çalışıyor, kırmızı = exit.
-- **En iyi rozeti**: o anda küresel olarak en iyi sonucu üreten çalışan
-  sarı `EN İYİ` etiketi alır.
-- **Sayısal istatistikler**: `k`, `en iyi k`, toplam kesişim, en iyi toplam,
-  hareket sayısı, kabul oranı, mevcut sıcaklık, sıcaklık limiti.
-- **İlerleme barları**: faz süre kullanımı + sıcaklığın limit ile log
-  ölçekteki konumu.
-- **Canlı SVG**: en iyi çizimin küçük bir önizlemesi (her saniye yenilenir).
-
-Üst kısımdaki özet panelinde aktif çalışan sayısı, küresel en iyi `k` ve
-toplam kesişim, ve kümülatif hareket / kabul oranı görüntülenir.
-
-> Solver tarafında bu özelliği aktive eden iki yeni bayrak vardır:
-> `--status-file PATH` (JSON status dosyası yolu) ve `--status-id STRING`
-> (kart başlığında görüntülenecek isim). `dashboard.py` bunları otomatik
-> ayarlar; tek bir koşu için manuel kullanım da mümkündür.
-
-## Yarışma için ipuçları
-
-- **Süre yönetimi**: paper'da toplam 60 dk, ilk 10 dk Aşama 1. Çok büyük graflarda
-  Aşama 1'i 15–20 dk yapmayı deneyin.
-- **Çoklu seed**: SA stokastiktir. Aynı süreyi birden fazla seed ile koşturup en
-  iyiyi alma stratejisi her zaman işe yarar. En kolay yolu yukarıdaki
-  `dashboard.py`'tir; kabuk üzerinden de yapılabilir:
-  ```bash
-  for s in 1 2 3 4 5 6 7 8; do
-    ./sakgd -i graph.json -o out_$s.json -t 12 -p1 2 -s $s &
-  done; wait
-  for s in 1 2 3 4 5 6 7 8; do ./sakgd --verify out_$s.json; done
-  ```
-- **OGDF ile başlangıç**: OGDF kuruluysa, Stress-Minimization veya FMMM çıktısını
-  ayrı bir araçla `nodes[*].x/y` alanlarına yazıp ardından bu çözücüye verin.
-  Kod, JSON'daki konumları başlangıç olarak alır.
-
-## Kaynak
-
-- Bianchetti, J., & Moalic, L. (2025). *Winning the GD Challenge for the 4th Time:
-  Our Approach.* GD 2025 (LIPIcs.GD.2025.43).
-
-## Dosya yapısı
-
-```
-GraphContest/
-├── Makefile             # make / make debug / make clean
-├── README.md
-├── dashboard.py         # paralel koşum + HTTP server (canlı arayüz)
-├── dashboard/
-│   └── index.html       # vanilla JS dashboard
-├── src/
-│   └── main.cpp         # tüm solver (JSON parser dahil, harici bağımlılıksız)
-├── data/                # girdi grafları + üretilen *.out.json çıktılar
-│   ├── k5.json          # küçük doğrulama örnekleri
-│   ├── k6.json
-│   └── random30.json    # arayüz testi için 30 düğümlü rastgele graf
-└── runs/                # dashboard çalıştığında her seed için
-                         # status.json + output.json + log.txt
-```
+Bianchetti, J., & Moalic, L. (2025). *Winning the GD Challenge for the 4th Time:
+Our Approach.* 33rd International Symposium on Graph Drawing and Network
+Visualization, GD 2025. LIPIcs.GD.2025.43.
