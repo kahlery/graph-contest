@@ -12,15 +12,18 @@
 //
 // Build:  make approach1
 // Usage:  ./approach1 -i input.json -o output.json [-t min] [-p1 min] [-s seed]
-//                     [--mode {sa|lns}]
+//                     [--mode {sa|lns|ils}]
 //                     [--nh-size K] [--nh-cands R]
+//                     [--ils-perturb P]
 //
 // All options that exist in ./sakgd work identically here.
 // New options:
 //   --mode sa          Run original SA (default, identical to sakgd)
 //   --mode lns         Run Large Neighbourhood Search instead of SA
+//   --mode ils         Run Iterated Local Search (SA + random kicks between rounds)
 //   --nh-size K        Neighbourhood size per LNS iteration (default: n/10, min 3)
 //   --nh-cands R       Candidate positions tried per node in repair (default: 50)
+//   --ils-perturb P    Nodes randomly relocated per ILS kick (default: n/10, min 3)
 
 #include <algorithm>
 #include <cassert>
@@ -1144,10 +1147,12 @@ public:
     // Phase 1: minimise total crossings.  Phase 2: minimise k-value.
     // nhSize:     nodes per neighbourhood  (0 = auto: n/10, min 3).
     // candidates: positions tried per node (0 = auto: 50).
+    // adaptive:   if true, dynamically resize neighbourhood based on improvement rate.
     void runLNS(int phase,
                 double initT, double tLim,
                 double timeLimitSec,
-                int nhSize, int candidates)
+                int nhSize, int candidates,
+                bool adaptive = false)
     {
         phaseStartedAt = steady_clock::now();
         curPhase   = 10 + phase;   // 11 / 12 so the dashboard can distinguish
@@ -1163,16 +1168,22 @@ public:
         if (nhSize    <= 0) nhSize    = max(3, n / 10);
         if (candidates <= 0) candidates = 50;
 
+        const int nhMin = 3;
+        const int nhMax = max(nhMin, n / 3);
+
         // Restart from best every restartEvery iterations to prevent drift.
         int restartEvery = max(10, 500 / nhSize);
 
-        cerr << "[LNS phase " << phase << "] start"
+        cerr << "[LNS" << (adaptive ? "-adaptive" : "") << " phase " << phase << "] start"
              << "  nhSize=" << nhSize << " candidates=" << candidates
              << "  restartEvery=" << restartEvery
              << "  budget=" << timeLimitSec << "s"
              << "  initial k=" << kVal << " totalX=" << totalX << "\n";
 
         long long iters = 0, improves = 0;
+        // Adaptive: track improvements in a sliding window of 50 iterations.
+        const int adaptWindow = 50;
+        long long windowImproves = 0;
         double nextReport = 30.0;
         double nextStatus = 0.0;
 
@@ -1237,9 +1248,29 @@ public:
             if (kVal < bestK || (kVal == bestK && totalX < bestX)) {
                 saveBest();
                 improves++;
+                windowImproves++;
             }
 
             iters++;
+
+            // Adaptive: resize neighbourhood every adaptWindow iterations.
+            if (adaptive && iters % adaptWindow == 0) {
+                double rate = (double)windowImproves / adaptWindow;
+                if (rate < 0.05) {
+                    // Stalled — expand neighbourhood to escape local optimum.
+                    nhSize = min(nhMax, (int)(nhSize * 1.5 + 1));
+                    restartEvery = max(10, 500 / nhSize);
+                    cerr << "  [LNS-adaptive] stalled (rate=" << rate
+                         << ") -> nhSize=" << nhSize << "\n";
+                } else if (rate > 0.25 && nhSize > nhMin) {
+                    // Improving well — shrink for finer-grained search.
+                    nhSize = max(nhMin, (int)(nhSize / 1.3));
+                    restartEvery = max(10, 500 / nhSize);
+                    cerr << "  [LNS-adaptive] improving (rate=" << rate
+                         << ") -> nhSize=" << nhSize << "\n";
+                }
+                windowImproves = 0;
+            }
 
             // Periodic restart from best to bound quality degradation.
             if (iters % restartEvery == 0) restoreBest();
@@ -1250,17 +1281,111 @@ public:
                 nextStatus = el + statusInterval;
             }
             if (el >= nextReport) {
-                cerr << "  [LNS " << phase << "] t=" << (int)el
+                cerr << "  [LNS" << (adaptive ? "-adaptive" : "") << " " << phase
+                     << "] t=" << (int)el
                      << "s  bestK=" << bestK << " bestX=" << bestX
                      << "  curK=" << kVal << " curX=" << totalX
+                     << "  nhSize=" << nhSize
                      << "  iters=" << iters << " improves=" << improves << "\n";
                 nextReport = el + 30.0;
             }
         }
 
         writeStatus(0, iters, improves, "phase-done");
-        cerr << "[LNS phase " << phase << "] end"
+        cerr << "[LNS" << (adaptive ? "-adaptive" : "") << " phase " << phase << "] end"
              << "  iters=" << iters << " improves=" << improves
+             << "  bestK=" << bestK << " bestX=" << bestX << "\n";
+    }
+
+    // ---- ILS (Iterated Local Search) ------------------------------------
+
+    // Random perturbation kick used between inner SA rounds.
+    // Relocates 'size' nodes to uniformly-random valid canvas positions.
+    // The idea: SA converges to a local optimum; the kick disrupts the layout
+    // enough that the next SA round explores a different basin.
+    void kick(int size) {
+        size = max(1, min(size, n));
+
+        // Random permutation so we don't always kick the same nodes.
+        vector<int> order(n);
+        for (int i = 0; i < n; i++) order[i] = i;
+        shuffle(order.begin(), order.end(), rng);
+
+        MovePlan plan;
+        plan.pairChanges.reserve(256);
+        plan.edgeCounts.reserve(256);
+
+        int kicked = 0;
+        for (int v : order) {
+            if (kicked >= size) break;
+            for (int attempt = 0; attempt < 200; attempt++) {
+                ll nx = uniform_int_distribution<ll>(ox, ox + W)(rng);
+                ll ny = uniform_int_distribution<ll>(oy, oy + H)(rng);
+                Pt newPos{nx, ny};
+                if (newPos == pos[v]) continue;
+                {
+                    auto it = occupied.find(newPos);
+                    if (it != occupied.end() && it->second != v) continue;
+                }
+                if (wouldCauseVertexEdgeOverlap(v, newPos)) continue;
+                planMove(v, newPos, plan);
+                commitMove(plan);
+                kicked++;
+                break;
+            }
+        }
+        cerr << "[ILS] kick: moved " << kicked << "/" << size << " nodes\n";
+    }
+
+    // ILS main loop.
+    // Alternates SA annealing runs with random kicks to escape local optima.
+    // Each inner SA runs for innerBudget seconds (total / targetRounds).
+    // perturbSize: nodes kicked per perturbation (0 = auto: n/10, min 3).
+    void runILS(int phase,
+                double initT, double decT, double decTW, double tLim,
+                double totalTimeSec, int perturbSize) {
+        auto t0 = steady_clock::now();
+        auto totalElapsed = [&]() {
+            return duration_cast<duration<double>>(
+                steady_clock::now() - t0).count();
+        };
+
+        if (perturbSize <= 0) perturbSize = max(3, n / 10);
+
+        // Target ~5 inner SA rounds; each at least 10 s.
+        int targetRounds   = max(2, min(5, (int)(totalTimeSec / 10.0)));
+        double innerBudget = totalTimeSec / targetRounds;
+
+        cerr << "[ILS phase " << phase << "] start"
+             << "  perturbSize=" << perturbSize
+             << "  innerBudget=" << (int)innerBudget << "s"
+             << "  totalBudget=" << (int)totalTimeSec << "s"
+             << "  initial k=" << kVal << " totalX=" << totalX << "\n";
+
+        int round = 0;
+        while (kVal > 0 && totalElapsed() < totalTimeSec) {
+            double remaining = totalTimeSec - totalElapsed();
+            if (remaining <= 1.0) break;
+            double budget = min(innerBudget, remaining);
+
+            cerr << "[ILS phase " << phase << "] round " << round + 1
+                 << "/" << targetRounds
+                 << "  budget=" << (int)budget << "s"
+                 << "  curBestK=" << bestK << "\n";
+
+            runSA(phase, initT, decT, decTW, tLim, budget);
+            round++;
+
+            if (kVal <= 0 || totalElapsed() >= totalTimeSec) break;
+
+            // Restore global best, then apply random kick so the next SA
+            // round starts from a perturbed version of the best solution.
+            restoreBest();
+            kick(perturbSize);
+        }
+
+        restoreBest();
+        cerr << "[ILS phase " << phase << "] end  rounds=" << round
              << "  bestK=" << bestK << " bestX=" << bestX << "\n";
     }
 };
@@ -1286,8 +1411,11 @@ static void printUsage(const char* prog) {
         "\nApproach-1 options:\n"
         "  --mode sa             Run simulated annealing (default)\n"
         "  --mode lns            Run Large Neighbourhood Search\n"
+        "  --mode lns-adaptive   Run LNS with dynamic neighbourhood sizing\n"
+        "  --mode ils            Run Iterated Local Search (SA + random kicks)\n"
         "  --nh-size K           LNS neighbourhood size   (default: n/10, min 3)\n"
-        "  --nh-cands R          LNS candidates per node  (default: 50)\n";
+        "  --nh-cands R          LNS candidates per node  (default: 50)\n"
+        "  --ils-perturb P       ILS kick size            (default: n/10, min 3)\n";
 }
 
 int main(int argc, char** argv) {
@@ -1301,6 +1429,7 @@ int main(int argc, char** argv) {
     string mode = "sa";
     int lnsNhSize  = 0;
     int lnsCands   = 0;
+    int ilsPerturb = 0;
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -1320,6 +1449,7 @@ int main(int argc, char** argv) {
         else if (a == "--mode")              mode       = need("--mode");
         else if (a == "--nh-size")           lnsNhSize  = atoi(need("--nh-size"));
         else if (a == "--nh-cands")          lnsCands   = atoi(need("--nh-cands"));
+        else if (a == "--ils-perturb")       ilsPerturb = atoi(need("--ils-perturb"));
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         else if (inputFile.empty())  inputFile  = a;
         else if (outputFile.empty()) outputFile = a;
@@ -1327,8 +1457,8 @@ int main(int argc, char** argv) {
     }
     if (inputFile.empty()) { printUsage(argv[0]); return 1; }
     if (outputFile.empty() && !verifyOnly) outputFile = inputFile + ".out.json";
-    if (mode != "sa" && mode != "lns") {
-        cerr << "Unknown --mode '" << mode << "' (expected 'sa' or 'lns')\n";
+    if (mode != "sa" && mode != "lns" && mode != "lns-adaptive" && mode != "ils") {
+        cerr << "Unknown --mode '" << mode << "' (expected 'sa', 'lns', 'lns-adaptive', or 'ils')\n";
         return 1;
     }
 
@@ -1365,12 +1495,18 @@ int main(int argc, char** argv) {
 
     double remaining = max(0.0, (totalMin - phase1Min) * 60.0);
 
-    if (mode == "lns") {
-        cerr << "Mode: LNS (Large Neighbourhood Search)"
+    if (mode == "lns" || mode == "lns-adaptive") {
+        bool adaptive = (mode == "lns-adaptive");
+        cerr << "Mode: " << (adaptive ? "LNS-adaptive" : "LNS") << " (Large Neighbourhood Search)"
              << "  nhSize=" << (lnsNhSize > 0 ? to_string(lnsNhSize) : "auto")
              << " cands=" << (lnsCands > 0 ? to_string(lnsCands) : "auto") << "\n";
-        solver.runLNS(/*phase*/1, 50.0, 0.01, phase1Min * 60.0, lnsNhSize, lnsCands);
-        solver.runLNS(/*phase*/2,  1.0, 0.01, remaining,        lnsNhSize, lnsCands);
+        solver.runLNS(/*phase*/1, 50.0, 0.01, phase1Min * 60.0, lnsNhSize, lnsCands, adaptive);
+        solver.runLNS(/*phase*/2,  1.0, 0.01, remaining,        lnsNhSize, lnsCands, adaptive);
+    } else if (mode == "ils") {
+        cerr << "Mode: ILS (Iterated Local Search)"
+             << "  perturbSize=" << (ilsPerturb > 0 ? to_string(ilsPerturb) : "auto") << "\n";
+        solver.runILS(/*phase*/1, 50.0,  0.999, 0.99, 0.01, phase1Min * 60.0, ilsPerturb);
+        solver.runILS(/*phase*/2,  1.0, 0.9999, 0.99, 0.01, remaining,        ilsPerturb);
     } else {
         cerr << "Mode: SA (Simulated Annealing)\n";
         solver.runSA(/*phase*/1, 50.0,  0.999, 0.99, 0.01, phase1Min * 60.0);

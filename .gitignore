@@ -1,5 +1,10 @@
 sakgd
+approach1
 runs/
 data/*.out.json
 data/test*.json
 *.tmp
+
+# Batch pipeline: keep the summaries, ignore the heavy per-run layouts/logs.
+results/**/*.json
+results/**/*.log

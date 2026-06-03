@@ -23,7 +23,7 @@ Minimise **k = max crossings on any single edge**, breaking ties by total crossi
 | `src/main.cpp` | Original solver (`./sakgd`) — Simulated Annealing only. JSON parser and spatial grid included; no external dependencies. |
 | `src/approach1_lns.cpp` | Approach 1 solver (`./approach1`) — adds Large Neighbourhood Search on top of the same SA infrastructure. Supports `--mode sa` (identical to `./sakgd`) and `--mode lns`. |
 | `dashboard.py` | Runs multiple solver workers in parallel and serves a live browser dashboard. |
-| `pipeline.py` | Overnight batch runner: cycles through all 9 contest graphs, warm-starting each round from the previous best output. |
+| `run_contest.py` | Batch runner: solves the 9 contest graphs with each method (`sa`, `staged`, `ils`, `lns`), tracks every run in `results/runs/`, maintains best-ever layouts in `results/best/`, and generates `results/report.html`. |
 | `dashboard/index.html` | Vanilla-JS frontend for the live dashboard. |
 | `data/` | Input graphs (JSON) and example solutions. |
 | `results/` | Best outputs per contest graph, plus per-run logs. |
@@ -69,6 +69,25 @@ Parameters (paper Table 1):
 
 ---
 
+### ILS — Iterated Local Search (`--mode ils`)
+
+Approach 2. Alternates full SA annealing runs with random *kicks* that break
+the current layout out of its local optimum:
+
+**Inner SA** — runs the full two-phase SA for an inner budget (`totalTime / 5`).
+
+**Kick** — restores the global best, then randomly relocates `P` nodes
+(`--ils-perturb P`, default `n/10`) to fresh canvas positions.
+
+Repeat until the total time budget is exhausted, keeping the global best
+across all inner rounds.
+
+This directly addresses the LNS limitation: LNS only ever commits strictly-
+improving moves and stalls once it finds a local optimum. ILS restarts from a
+genuinely disrupted layout, giving SA a new basin to explore.
+
+---
+
 ### LNS — Large Neighbourhood Search (`--mode lns`)
 
 Approach 1. Moves a connected *group* of nodes per iteration rather than one
@@ -106,11 +125,14 @@ Requires only a C++17 compiler (GCC or Clang). No external libraries.
 # SA — 60 min total, 10 min phase 1
 ./sakgd -i data/graph.json -o out.json -t 60 -p1 10
 
-# LNS (Approach 1) — same timing
-./approach1 -i data/graph.json -o out.json -t 60 -p1 10 --mode lns
+# ILS (Approach 1) — same timing, default kick size (n/10)
+./approach1 -i data/graph.json -o out.json -t 60 -p1 10 --mode ils
 
-# LNS with explicit neighbourhood size and candidates
-./approach1 -i data/625-nodes.json -o out.json --mode lns --nh-size 30 --nh-cands 100
+# ILS with explicit kick size
+./approach1 -i data/graph.json -o out.json -t 60 --mode ils --ils-perturb 20
+
+# LNS (Approach 1)
+./approach1 -i data/graph.json -o out.json -t 60 -p1 10 --mode lns
 
 # SA via approach1 (identical result to ./sakgd)
 ./approach1 -i data/graph.json -o out.json --mode sa
@@ -140,9 +162,10 @@ Requires only a C++17 compiler (GCC or Clang). No external libraries.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--mode {sa\|lns}` | `sa` | Algorithm to run |
+| `--mode {sa\|lns\|ils}` | `sa` | Algorithm to run |
 | `--nh-size K` | `n/10` | LNS neighbourhood size |
 | `--nh-cands R` | `50` | LNS candidate positions per node |
+| `--ils-perturb P` | `n/10` | ILS kick size (nodes randomly relocated per kick) |
 
 ---
 
@@ -162,14 +185,60 @@ highlighted.
 
 ---
 
-## Pipeline (overnight batch)
+## Batch pipeline (`run_contest.py`)
+
+Solves the 9 contest graphs (`data/live-2025-contest/live-contest/Automatic-*.json`)
+with one or more methods and writes everything to `results/`.
 
 ```bash
-# Run all 9 contest graphs, 4 workers each, until 23:00
-python3 pipeline.py --graphs 1-9 --workers 4 --minutes 60 --until 23:00
+# Smoke test: 30 s per (graph × method), fast graphs
+python3 run_contest.py --minutes 0.5 --methods sa,staged,ils --graphs 1-7 --seed 42
+
+# Real run: 10 min per combination, all 9 graphs
+python3 run_contest.py --minutes 10 --methods sa,staged,ils --graphs 1-9 --seed 42
+
+# Warm-start from the best layouts found in previous runs
+python3 run_contest.py --minutes 10 --methods sa,staged,ils --warm-start
+
+# Just regenerate the HTML report without running the solver
+python3 run_contest.py --report-only
 ```
 
-Each round warm-starts from the previous best output stored in `results/`.
+**Methods**
+
+| Method | What it runs |
+|--------|--------------|
+| `sa`     | Pure Simulated Annealing (`./sakgd`). |
+| `staged` | Contest-style chain: LNS for `--staged-lns-frac` of budget (default 30 %) to descend fast, then SA warm-started on that output for the remaining 70 %. |
+| `ils`    | Iterated Local Search: full SA inner run → random kick (relocate `n/10` nodes) → repeat, keeping global best across rounds. Escapes local optima that SA and LNS both get stuck in. |
+| `lns`    | Pure LNS (`./approach1 --mode lns`). |
+
+**Output layout**
+
+```
+results/
+  runs/
+    2026-06-03_14-30-52_t10.0m_s42/   # every run is preserved
+      Automatic-1/  sa.json sa.log  staged*.json/log  ils.json ils.log
+      summary.csv   summary.md
+  best/
+    Automatic-1/  sa.json  staged.json  ils.json   # best-ever per graph × method
+  bests.json       # best k metadata (updated after every run)
+  history.json     # full run log
+  report.html      # interactive HTML report (bar charts + history table)
+```
+
+**Notes / caveats**
+
+- `staged` launches the solver **twice** per graph (LNS leg then SA leg).
+- `ils` splits the budget into ~5 inner SA rounds with kicks between them.
+- The solver counts all initial crossings *before* the `-t` budget starts.
+  On **Automatic-8** (10,466 nodes, ~45 M crossings) this setup is ~6 min per
+  launch — give the big graphs a long budget (`--minutes 60` or more).
+- **Automatic-8/9** inputs contain vertex-edge overlaps the solver may not be
+  able to repair in a short budget; those runs are marked `[INVALID]` / ⚠️.
+- Open `results/report.html` in any browser after a run for the visual summary
+  (requires internet access for the Chart.js CDN).
 
 ---
 
