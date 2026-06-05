@@ -490,12 +490,40 @@ def generate_report(out_root, history, bests, methods_order=None):
             eta_str     = "?"
 
         pct      = done / total * 100 if total else 0
-        next_str = (f"{next_combo[0]} &nbsp;/&nbsp; <em>{next_combo[1]}</em>"
+        next_str = (f"{next_combo[0]} &nbsp;/&nbsp; <em>{next_combo[1].upper()}</em>"
                     if next_combo else "all combos complete")
+
+        try:
+            run_started = datetime.fromisoformat(latest["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            run_started = latest.get("timestamp", "?")
+        run_workers  = latest.get("workers", "?")
+        run_methods  = ", ".join(m.upper() for m in latest.get("methods", []))
+        run_graphs   = ", ".join(g.split("-")[-1] for g in p_graphs)
+
+        last_combo = done_combos[-1] if done_combos else None
+        if last_combo:
+            lk   = last_combo.get("best_k", "—")
+            ltx  = last_combo.get("best_totalX", "—")
+            limp = last_combo.get("improvement_pct")
+            limp_s = f" <span class='imp'>({limp:+.1f}%)</span>" if limp is not None else ""
+            lflag  = " <span class='warn'>⚠ invalid</span>" if not last_combo.get("best_valid") else ""
+            last_str = (f"{last_combo['graph']} &nbsp;/&nbsp;"
+                        f" <em>{last_combo['method'].upper()}</em>"
+                        f" &nbsp;→&nbsp; k={lk}, totalX={ltx}{limp_s}{lflag}")
+        else:
+            last_str = "—"
 
         progress_html = f"""
 <h2>Run Progress</h2>
-<div class="card">
+<div class="card prog-card">
+  <div class="prog-header">
+    <div>
+      <span class="prog-run-id">Run {latest.get("id", "?")}</span>
+      <span class="prog-started">started {run_started}</span>
+    </div>
+    <div class="prog-meta">{run_workers} workers &nbsp;·&nbsp; graphs [{run_graphs}] &nbsp;·&nbsp; {run_methods}</div>
+  </div>
   <div class="prog-stats">
     <div><span class="prog-stat-label">Combos Done</span><span class="prog-stat-value">{done} / {total}</span></div>
     <div><span class="prog-stat-label">Progress</span><span class="prog-stat-value">{pct:.1f}%</span></div>
@@ -504,9 +532,14 @@ def generate_report(out_root, history, bests, methods_order=None):
     <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta">{eta_str}</span></div>
   </div>
   <div class="progress-bar-outer">
-    <div class="progress-bar-inner" style="width:{pct:.1f}%"></div>
+    <div class="progress-bar-inner" style="width:{pct:.1f}%">
+      <span class="progress-bar-label">{pct:.1f}%</span>
+    </div>
   </div>
-  <div class="prog-next">Currently running: <strong>{next_str}</strong></div>
+  <div class="prog-current">
+    <div class="prog-row"><span class="prog-row-label">Last completed</span><span class="prog-row-val">{last_str}</span></div>
+    <div class="prog-row"><span class="prog-row-label">Currently running</span><span class="prog-row-val running">{next_str}</span></div>
+  </div>
 </div>"""
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -536,7 +569,8 @@ def generate_report(out_root, history, bests, methods_order=None):
   h2 {{ font-size:.76rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
         color:var(--muted); border-bottom:1px solid var(--border);
         padding-bottom:4px; margin:24px 0 10px; }}
-  .card {{ background:var(--card); border:1px solid var(--border); padding:20px; margin-bottom:16px; }}
+  .card {{ background:var(--card); border:1px solid var(--border);
+           border-radius:6px; padding:20px; margin-bottom:16px; }}
   .charts {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
   @media(max-width:900px){{ .charts{{ grid-template-columns:1fr; }} }}
   canvas {{ max-height:300px; }}
@@ -548,22 +582,40 @@ def generate_report(out_root, history, bests, methods_order=None):
   tr:nth-child(even) {{ background:var(--row-alt); }}
   tr:hover {{ background:var(--row-hover); }}
   strong {{ color:var(--best); font-weight:700; }}
-  details {{ background:var(--card); border:1px solid var(--border); padding:10px 14px; margin-bottom:6px; }}
+  details {{ background:var(--card); border:1px solid var(--border);
+             border-radius:6px; padding:10px 14px; margin-bottom:6px; }}
   summary {{ cursor:pointer; font-weight:600; color:#333; font-size:.85rem; }}
   summary:hover {{ color:var(--accent); }}
   .inner {{ margin-top:8px; font-size:.77rem; }}
   .inner td {{ padding:3px 8px; }}
   .legend {{ display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:.82rem; }}
-  .dot {{ width:10px; height:10px; display:inline-block; margin-right:5px; }}
-  .progress-bar-outer {{ background:#d8d8d8; height:20px; margin:10px 0; }}
-  .progress-bar-inner {{ height:100%; background:linear-gradient(90deg,#4361ee,#f72585); }}
-  .prog-stats {{ display:flex; gap:32px; flex-wrap:wrap; margin-bottom:8px; }}
-  .prog-stat-label {{ color:var(--muted); font-size:.7rem; text-transform:uppercase;
-                      letter-spacing:.07em; font-weight:700; display:block; margin-bottom:2px; }}
+  .dot {{ width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:5px; }}
+  .progress-bar-outer {{ background:#d8d8d8; height:22px; margin:12px 0; border-radius:4px; overflow:hidden; }}
+  .progress-bar-inner {{ height:100%; background:linear-gradient(90deg,#4361ee,#f72585);
+                          border-radius:4px; position:relative; min-width:2px; transition:width .4s; }}
+  .progress-bar-label {{ position:absolute; right:6px; top:50%; transform:translateY(-50%);
+                          font-size:.72rem; font-weight:700; color:#fff;
+                          text-shadow:0 1px 2px rgba(0,0,0,.3); white-space:nowrap; }}
+  .prog-card {{ border-left:4px solid var(--accent); }}
+  .prog-header {{ display:flex; justify-content:space-between; align-items:baseline;
+                  flex-wrap:wrap; gap:6px; padding-bottom:12px; margin-bottom:14px;
+                  border-bottom:1px solid var(--border); }}
+  .prog-run-id {{ font-weight:700; font-size:.95rem; color:var(--text); margin-right:10px; }}
+  .prog-started {{ font-size:.8rem; color:var(--muted); }}
+  .prog-meta {{ font-size:.78rem; color:var(--muted); }}
+  .prog-stats {{ display:flex; gap:28px; flex-wrap:wrap; margin-bottom:4px; }}
+  .prog-stat-label {{ color:var(--muted); font-size:.68rem; text-transform:uppercase;
+                      letter-spacing:.07em; font-weight:700; display:block; margin-bottom:3px; }}
   .prog-stat-value {{ font-size:.92rem; font-weight:600; color:var(--text); }}
   .prog-stat-value.eta {{ color:var(--accent); }}
-  .prog-next {{ font-size:.82rem; color:var(--muted); margin-top:6px; }}
-  .prog-next strong {{ color:#333; font-weight:600; }}
+  .prog-current {{ margin-top:6px; display:flex; flex-direction:column; gap:5px; }}
+  .prog-row {{ display:flex; align-items:baseline; gap:8px; font-size:.82rem; }}
+  .prog-row-label {{ color:var(--muted); font-size:.68rem; text-transform:uppercase;
+                     letter-spacing:.06em; font-weight:700; min-width:130px; flex-shrink:0; }}
+  .prog-row-val {{ color:#333; }}
+  .prog-row-val.running {{ color:var(--accent); font-weight:600; }}
+  .imp {{ color:#2a7a3a; font-size:.78rem; }}
+  .warn {{ color:#c0392b; font-size:.78rem; }}
 </style>
 </head>
 <body>
