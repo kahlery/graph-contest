@@ -448,6 +448,8 @@ def generate_report(out_root, history, bests, methods_order=None):
 
     # --- progress section ---
     progress_html = ""
+    start_ts_iso  = ""
+    remaining_min = 0
     if history.get("runs"):
         latest      = history["runs"][-1]
         p_graphs    = latest.get("graphs", [])
@@ -486,9 +488,11 @@ def generate_report(out_root, history, bests, methods_order=None):
             elapsed_str = (f"{h}h {m_val}m" if h else f"{m_val}m {rem % 60}s")
             eta_dt      = datetime.now() + timedelta(seconds=remaining_min * 60)
             eta_str     = eta_dt.strftime("%H:%M")
+            start_ts_iso = start_dt.isoformat()
         except Exception:
-            elapsed_str = "?"
-            eta_str     = "?"
+            elapsed_str  = "?"
+            eta_str      = "?"
+            start_ts_iso = ""
 
         pct      = done / total * 100 if total else 0
         next_str = (f"{next_combo[0]} &nbsp;/&nbsp; <em>{next_combo[1].upper()}</em>"
@@ -528,9 +532,9 @@ def generate_report(out_root, history, bests, methods_order=None):
   <div class="prog-stats">
     <div><span class="prog-stat-label">Combos Done</span><span class="prog-stat-value">{done} / {total}</span></div>
     <div><span class="prog-stat-label">Progress</span><span class="prog-stat-value">{pct:.1f}%</span></div>
-    <div><span class="prog-stat-label">Elapsed</span><span class="prog-stat-value">{elapsed_str}</span></div>
-    <div><span class="prog-stat-label">Remaining</span><span class="prog-stat-value">~{remaining_min} min</span></div>
-    <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta">{eta_str}</span></div>
+    <div><span class="prog-stat-label">Elapsed</span><span class="prog-stat-value" id="elapsed">{elapsed_str}</span></div>
+    <div><span class="prog-stat-label">Remaining</span><span class="prog-stat-value" id="remaining">~{remaining_min} min</span></div>
+    <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta" id="eta">{eta_str}</span></div>
   </div>
   <div class="progress-bar-outer">
     <div class="progress-bar-inner" style="width:{pct:.1f}%">
@@ -673,6 +677,33 @@ new Chart(document.getElementById('improvChart'), {{
     }}
   }}
 }});
+(function(){{
+  const startTs = "{start_ts_iso}";
+  const remainingSec = {remaining_min} * 60;
+  if (!startTs) return;
+  const startMs = new Date(startTs).getTime();
+  function fmt(sec) {{
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600), r = sec % 3600;
+    const m = Math.floor(r / 60), s = r % 60;
+    if (h > 0) return h + 'h ' + m + 'm';
+    return m + 'm ' + String(s).padStart(2,'0') + 's';
+  }}
+  function tick() {{
+    const elapsed = (Date.now() - startMs) / 1000;
+    const left    = Math.max(0, remainingSec - (elapsed - (remainingSec > 0 ? 0 : 0)));
+    const etaDt   = new Date(Date.now() + left * 1000);
+    const etaStr  = etaDt.getHours().toString().padStart(2,'0') + ':' + etaDt.getMinutes().toString().padStart(2,'0');
+    const el = document.getElementById('elapsed');
+    const rm = document.getElementById('remaining');
+    const et = document.getElementById('eta');
+    if (el) el.textContent = fmt(elapsed);
+    if (rm) rm.textContent = '~' + Math.ceil(left / 60) + ' min';
+    if (et) et.textContent = etaStr;
+  }}
+  tick();
+  setInterval(tick, 1000);
+}})();
 </script>
 </body>
 </html>"""
