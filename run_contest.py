@@ -479,10 +479,11 @@ def generate_report(out_root, history, bests, methods_order=None):
         )
 
         try:
-            start_dt    = datetime.fromisoformat(latest["timestamp"])
+            start_dt    = datetime.strptime(latest["id"], "%Y-%m-%d_%H-%M-%S")
             elapsed_sec = (datetime.now() - start_dt).total_seconds()
             h, rem      = divmod(int(elapsed_sec), 3600)
-            elapsed_str = f"{h}h {rem // 60}m"
+            m_val       = rem // 60
+            elapsed_str = (f"{h}h {m_val}m" if h else f"{m_val}m {rem % 60}s")
             eta_dt      = datetime.now() + timedelta(seconds=remaining_min * 60)
             eta_str     = eta_dt.strftime("%H:%M")
         except Exception:
