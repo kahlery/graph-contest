@@ -2,48 +2,107 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="refresh" content="30">
 <title>GD-2025 k-planarity Results</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
   :root {
-    --bg:#0f0f1a; --card:#1a1a2e; --border:#2a2a4a;
-    --text:#e0e0e0; --muted:#888;
+    --bg:#f0f0f0; --card:#ffffff; --border:#c4c4c4;
+    --text:#111111; --muted:#666666; --th-bg:#e4e4e4;
+    --row-alt:#f7f7f7; --row-hover:#eef2ff;
+    --best:#1a6e2e; --accent:#4361ee;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--text);
-          font-family:'Segoe UI',system-ui,sans-serif; padding:24px; }
-  h1 { font-size:1.8rem; margin-bottom:4px; }
-  .sub { color:var(--muted); font-size:.9rem; margin-bottom:28px; }
-  h2 { font-size:1.1rem; margin:28px 0 10px; color:#aac;
-        border-bottom:1px solid var(--border); padding-bottom:6px; }
+          font-family:'Segoe UI',system-ui,sans-serif;
+          padding:32px; max-width:1400px; margin:0 auto; }
+  h1 { font-size:1.6rem; font-weight:700; padding-bottom:10px;
+        border-bottom:3px solid var(--accent); margin-bottom:6px; }
+  .sub { color:var(--muted); font-size:.85rem; margin-bottom:24px; margin-top:4px; }
+  h2 { font-size:.76rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+        color:var(--muted); border-bottom:1px solid var(--border);
+        padding-bottom:4px; margin:24px 0 10px; }
   .card { background:var(--card); border:1px solid var(--border);
-           border-radius:10px; padding:20px; margin-bottom:20px; }
-  .charts { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+           border-radius:6px; padding:20px; margin-bottom:16px; }
+  .charts { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
   @media(max-width:900px){ .charts{ grid-template-columns:1fr; } }
-  canvas { max-height:320px; }
-  table { width:100%; border-collapse:collapse; font-size:.84rem; }
+  canvas { max-height:300px; }
+  table { width:100%; border-collapse:collapse; font-size:.82rem; }
   th,td { padding:6px 10px; border:1px solid var(--border); text-align:right; }
-  th { background:#1e1e3a; color:#aac; text-align:center; }
+  th { background:var(--th-bg); color:#333; text-align:center; font-weight:700;
+        font-size:.74rem; letter-spacing:.05em; text-transform:uppercase; }
   td:first-child,th:first-child { text-align:left; }
-  tr:nth-child(even) { background:#14142a; }
-  tr:hover { background:#20204a; }
-  strong { color:#7aff8a; }
+  tr:nth-child(even) { background:var(--row-alt); }
+  tr:hover { background:var(--row-hover); }
+  strong { color:var(--best); font-weight:700; }
   details { background:var(--card); border:1px solid var(--border);
-             border-radius:8px; padding:12px; margin-bottom:10px; }
-  summary { cursor:pointer; font-weight:600; color:#aac; }
-  summary:hover { color:#fff; }
-  .inner { margin-top:10px; font-size:.8rem; }
-  .inner td { padding:4px 8px; }
-  .legend { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:10px; font-size:.84rem; }
-  .dot { width:11px; height:11px; border-radius:50%; display:inline-block; margin-right:4px; }
+             border-radius:6px; padding:10px 14px; margin-bottom:6px; }
+  summary { cursor:pointer; font-weight:600; color:#333; font-size:.85rem; }
+  summary:hover { color:var(--accent); }
+  .inner { margin-top:8px; font-size:.77rem; }
+  .inner td { padding:3px 8px; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:.82rem; }
+  .dot { width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:5px; }
+  .progress-bar-outer { background:#d8d8d8; height:22px; margin:12px 0; border-radius:4px; overflow:hidden; }
+  .progress-bar-inner { height:100%; background:linear-gradient(90deg,#4361ee,#f72585);
+                          border-radius:4px; position:relative; min-width:2px; transition:width .4s; }
+  .progress-bar-label { position:absolute; right:6px; top:50%; transform:translateY(-50%);
+                          font-size:.72rem; font-weight:700; color:#fff;
+                          text-shadow:0 1px 2px rgba(0,0,0,.3); white-space:nowrap; }
+  .prog-card { border-left:4px solid var(--accent); }
+  .prog-header { display:flex; justify-content:space-between; align-items:baseline;
+                  flex-wrap:wrap; gap:6px; padding-bottom:12px; margin-bottom:14px;
+                  border-bottom:1px solid var(--border); }
+  .prog-run-id { font-weight:700; font-size:.95rem; color:var(--text); margin-right:10px; }
+  .prog-started { font-size:.8rem; color:var(--muted); }
+  .prog-meta { font-size:.78rem; color:var(--muted); }
+  .prog-stats { display:flex; gap:28px; flex-wrap:wrap; margin-bottom:4px; }
+  .prog-stat-label { color:var(--muted); font-size:.68rem; text-transform:uppercase;
+                      letter-spacing:.07em; font-weight:700; display:block; margin-bottom:3px; }
+  .prog-stat-value { font-size:.92rem; font-weight:600; color:var(--text); }
+  .prog-stat-value.eta { color:var(--accent); }
+  .prog-current { margin-top:6px; display:flex; flex-direction:column; gap:5px; }
+  .prog-row { display:flex; align-items:baseline; gap:8px; font-size:.82rem; }
+  .prog-row-label { color:var(--muted); font-size:.68rem; text-transform:uppercase;
+                     letter-spacing:.06em; font-weight:700; min-width:130px; flex-shrink:0; }
+  .prog-row-val { color:#333; }
+  .prog-row-val.running { color:var(--accent); font-weight:600; }
+  .imp { color:#2a7a3a; font-size:.78rem; }
+  .warn { color:#c0392b; font-size:.78rem; }
 </style>
 </head>
 <body>
 <h1>GD-2025 k-planarity Results</h1>
-<div class="sub">Generated 2026-06-03 09:32:32 &nbsp;|&nbsp; 8 graphs &nbsp;|&nbsp; 1 runs</div>
+<div class="sub">Generated 2026-06-05 21:26:23 &nbsp;|&nbsp; 8 graphs &nbsp;|&nbsp; 2 runs</div>
 
-<div class="legend"><span><span class="dot" style="background:#aaa"></span>Baseline</span><span><span class="dot" style="background:#4361ee"></span>SA</span><span><span class="dot" style="background:#7209b7"></span>STAGED</span><span><span class="dot" style="background:#f72585"></span>ILS</span><span><span class="dot" style="background:#f4a261"></span>STAGED-ADAPTIVE</span></div>
+<div class="legend"><span><span class="dot" style="background:#999"></span>Baseline</span><span><span class="dot" style="background:#4361ee"></span>SA</span><span><span class="dot" style="background:#7209b7"></span>STAGED</span><span><span class="dot" style="background:#f72585"></span>ILS</span><span><span class="dot" style="background:#f4a261"></span>STAGED-ADAPTIVE</span></div>
 
+<h2>Run Progress</h2>
+<div class="card prog-card">
+  <div class="prog-header">
+    <div>
+      <span class="prog-run-id">Run 2026-06-05_19-40-28</span>
+      <span class="prog-started">started 2026-06-05 20:28:08</span>
+    </div>
+    <div class="prog-meta">2 workers &nbsp;·&nbsp; graphs [8] &nbsp;·&nbsp; SA, STAGED, ILS, STAGED-ADAPTIVE</div>
+  </div>
+  <div class="prog-stats">
+    <div><span class="prog-stat-label">Combos Done</span><span class="prog-stat-value">2 / 4</span></div>
+    <div><span class="prog-stat-label">Progress</span><span class="prog-stat-value">50.0%</span></div>
+    <div><span class="prog-stat-label">Elapsed</span><span class="prog-stat-value" id="elapsed">1h 45m</span></div>
+    <div><span class="prog-stat-label">Remaining</span><span class="prog-stat-value" id="remaining">~30.0 min</span></div>
+    <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta" id="eta">21:56</span></div>
+  </div>
+  <div class="progress-bar-outer">
+    <div class="progress-bar-inner" style="width:50.0%">
+      <span class="progress-bar-label">50.0%</span>
+    </div>
+  </div>
+  <div class="prog-current">
+    <div class="prog-row"><span class="prog-row-label">Last completed</span><span class="prog-row-val">Automatic-8 &nbsp;/&nbsp; <em>STAGED</em> &nbsp;→&nbsp; k=9645, totalX=36253606 <span class='imp'>(+3.7%)</span></span></div>
+    <div class="prog-row"><span class="prog-row-label">Currently running</span><span class="prog-row-val running">Automatic-8 &nbsp;/&nbsp; <em>ILS</em></span></div>
+  </div>
+</div>
 <h2>Best Results (All Runs)</h2>
 <div class="card">
 <table>
@@ -51,9 +110,15 @@
     <tr><th>Graph</th><th>Nodes</th><th>Edges</th><th>Baseline k</th><th colspan='2' style='color:#4361ee'>SA</th><th colspan='2' style='color:#7209b7'>STAGED</th><th colspan='2' style='color:#f72585'>ILS</th><th colspan='2' style='color:#f4a261'>STAGED-ADAPTIVE</th></tr>
     <tr><th colspan="4"></th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th></tr>
   </thead>
-  <tbody><tr><td>Automatic-1</td><td>50</td><td>202</td><td>96</td><td><strong>9</strong></td><td>402</td><td><strong>9</strong></td><td>406</td><td><strong>9</strong></td><td>415</td><td>10</td><td>417</td></tr><tr><td>Automatic-2</td><td>144</td><td>314</td><td>173</td><td><strong>5</strong></td><td>164</td><td>8</td><td>300</td><td><strong>5</strong></td><td>184</td><td>11</td><td>429</td></tr><tr><td>Automatic-3</td><td>100</td><td>420</td><td>216</td><td><strong>50</strong></td><td>5241</td><td>56</td><td>4358</td><td>58</td><td>5863</td><td><strong>50</strong></td><td>4005</td></tr><tr><td>Automatic-4</td><td>196</td><td>571</td><td>272</td><td><strong>7</strong></td><td>684</td><td>16</td><td>1280</td><td>9</td><td>741</td><td>12</td><td>891</td></tr><tr><td>Automatic-5</td><td>500</td><td>2556</td><td>1255</td><td>441</td><td>236246</td><td>134</td><td>71632</td><td>518</td><td>242538</td><td><strong>123</strong></td><td>65058</td></tr><tr><td>Automatic-6</td><td>200</td><td>3000</td><td>1523</td><td>941</td><td>674607</td><td>927</td><td>641584</td><td>941</td><td>691398</td><td><strong>851</strong></td><td>601741</td></tr><tr><td>Automatic-7</td><td>500</td><td>1740</td><td>869</td><td><strong>44</strong></td><td>16035</td><td>78</td><td>22168</td><td>69</td><td>24250</td><td>63</td><td>18458</td></tr><tr><td>Automatic-8</td><td>10466</td><td>20288</td><td>10193</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody>
+  <tbody><tr><td>Automatic-1</td><td>50</td><td>202</td><td>96</td><td title='run 2026-06-03_04-33-59'><strong>9</strong></td><td>402</td><td title='run 2026-06-03_04-33-59'><strong>9</strong></td><td>406</td><td title='run 2026-06-03_04-33-59'><strong>9</strong></td><td>415</td><td title='run 2026-06-03_04-33-59'>10</td><td>417</td></tr><tr><td>Automatic-2</td><td>144</td><td>314</td><td>173</td><td title='run 2026-06-03_04-33-59'><strong>5</strong></td><td>164</td><td title='run 2026-06-03_04-33-59'>8</td><td>300</td><td title='run 2026-06-03_04-33-59'><strong>5</strong></td><td>184</td><td title='run 2026-06-03_04-33-59'>11</td><td>429</td></tr><tr><td>Automatic-3</td><td>100</td><td>420</td><td>216</td><td title='run 2026-06-03_04-33-59'><strong>50</strong></td><td>5241</td><td title='run 2026-06-03_04-33-59'>56</td><td>4358</td><td title='run 2026-06-03_04-33-59'>58</td><td>5863</td><td title='run 2026-06-03_04-33-59'><strong>50</strong></td><td>4005</td></tr><tr><td>Automatic-4</td><td>196</td><td>571</td><td>272</td><td title='run 2026-06-03_04-33-59'><strong>7</strong></td><td>684</td><td title='run 2026-06-03_04-33-59'>16</td><td>1280</td><td title='run 2026-06-03_04-33-59'>9</td><td>741</td><td title='run 2026-06-03_04-33-59'>12</td><td>891</td></tr><tr><td>Automatic-5</td><td>500</td><td>2556</td><td>1255</td><td title='run 2026-06-03_04-33-59'>441</td><td>236246</td><td title='run 2026-06-03_04-33-59'>134</td><td>71632</td><td title='run 2026-06-03_04-33-59'>518</td><td>242538</td><td title='run 2026-06-03_04-33-59'><strong>123</strong></td><td>65058</td></tr><tr><td>Automatic-6</td><td>200</td><td>3000</td><td>1523</td><td title='run 2026-06-03_04-33-59'>941</td><td>674607</td><td title='run 2026-06-03_04-33-59'>927</td><td>641584</td><td title='run 2026-06-03_04-33-59'>941</td><td>691398</td><td title='run 2026-06-03_04-33-59'><strong>851</strong></td><td>601741</td></tr><tr><td>Automatic-7</td><td>500</td><td>1740</td><td>869</td><td title='run 2026-06-03_04-33-59'><strong>44</strong></td><td>16035</td><td title='run 2026-06-03_04-33-59'>78</td><td>22168</td><td title='run 2026-06-03_04-33-59'>69</td><td>24250</td><td title='run 2026-06-03_04-33-59'>63</td><td>18458</td></tr><tr><td>Automatic-8</td><td>10466</td><td>20288</td><td>10011</td><td title='budget 15.0 min | 2 workers | wall 2860.2s | run 2026-06-05_19-40-28'>9811</td><td>37469978</td><td title='budget 15.0 min | 2 workers | wall 3495.0s | run 2026-06-05_19-40-28'><strong>9645</strong></td><td>36253606</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody>
 </table>
 </div>
+
+<h2>Method Runtime &amp; Config</h2>
+<div class='card'><table><thead><tr><th>Method</th><th>Budget / combo</th><th>Workers</th><th>Combos run</th><th>Graphs</th><th>Avg wall / combo</th><th>Total wall</th></tr></thead><tbody><tr><td style='color:#4361ee;font-weight:700'>SA</td><td>5.0–15.0 min</td><td>2</td><td>9</td><td>8</td><td>13m 41s</td><td>2h 3m</td></tr>
+<tr><td style='color:#7209b7;font-weight:700'>STAGED</td><td>5.0–15.0 min</td><td>2</td><td>9</td><td>8</td><td>16m 52s</td><td>2h 31m</td></tr>
+<tr><td style='color:#f72585;font-weight:700'>ILS</td><td>5.0–15.0 min</td><td>2</td><td>8</td><td>8</td><td>10m 40s</td><td>1h 25m</td></tr>
+<tr><td style='color:#f4a261;font-weight:700'>STAGED-ADAPTIVE</td><td>5.0–8.0 min</td><td>2</td><td>7</td><td>7</td><td>6m 17s</td><td>44m 5s</td></tr></tbody></table></div>
 
 <h2>k-value Comparison</h2>
 <div class="charts">
@@ -62,6 +127,13 @@
 </div>
 
 <h2>Run History</h2>
+<details>
+          <summary>Run 2026-06-05_19-40-28 &nbsp;|&nbsp; 2026-06-05T20:28:08
+            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
+            methods=[sa, staged, ils, staged-adaptive]
+            &nbsp;|&nbsp; 2 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>STAGED</th><th>ILS</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-8</td><td>9811 <small>(+2.0%)</small><br><small>⏱ 2860.2s | 2w</small></td><td>9645 <small>(+3.7%)</small><br><small>⏱ 3495.0s | 2w</small></td><td>—</td><td>—</td></tr></tbody></table>
+        </details>
 <details>
           <summary>Run 2026-06-03_04-33-59 &nbsp;|&nbsp; 2026-06-03T04:38:34
             &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
@@ -83,33 +155,33 @@ new Chart(document.getElementById('kChart'), {
   type:'bar',
   data:{ labels:GL, datasets:[{
             label: 'Baseline',
-            data: [96, 173, 216, 272, 1255, 1523, 869, 10193],
+            data: [96, 173, 216, 272, 1255, 1523, 869, 10011],
             backgroundColor: 'rgba(160,160,160,0.4)',
             borderColor: '#aaaaaa', borderWidth: 1,
         },{
             label: 'SA',
-            data: [9, 5, 50, 7, 441, 941, 44, null],
-            backgroundColor: '#4361eecc', borderColor: '#4361ee', borderWidth: 2,
+            data: [9, 5, 50, 7, 441, 941, 44, 9811],
+            backgroundColor: '#4361ee99', borderColor: '#4361ee', borderWidth: 2,
         },{
             label: 'STAGED',
-            data: [9, 8, 56, 16, 134, 927, 78, null],
-            backgroundColor: '#7209b7cc', borderColor: '#7209b7', borderWidth: 2,
+            data: [9, 8, 56, 16, 134, 927, 78, 9645],
+            backgroundColor: '#7209b799', borderColor: '#7209b7', borderWidth: 2,
         },{
             label: 'ILS',
             data: [9, 5, 58, 9, 518, 941, 69, null],
-            backgroundColor: '#f72585cc', borderColor: '#f72585', borderWidth: 2,
+            backgroundColor: '#f7258599', borderColor: '#f72585', borderWidth: 2,
         },{
             label: 'STAGED-ADAPTIVE',
             data: [10, 11, 50, 12, 123, 851, 63, null],
-            backgroundColor: '#f4a261cc', borderColor: '#f4a261', borderWidth: 2,
+            backgroundColor: '#f4a26199', borderColor: '#f4a261', borderWidth: 2,
         }] },
   options:{ responsive:true,
-    plugins:{ legend:{labels:{color:'#e0e0e0'}},
-              title:{display:true,text:'k-value (lower=better)',color:'#aac'} },
+    plugins:{ legend:{labels:{color:'#333'}},
+              title:{display:true,text:'k-value (lower is better)',color:'#444'} },
     scales:{
-      x:{ticks:{color:'#aac'},grid:{color:'#2a2a4a'}},
-      y:{type:'logarithmic',ticks:{color:'#aac'},grid:{color:'#2a2a4a'},
-          title:{display:true,text:'k (log)',color:'#aac'}}
+      x:{ticks:{color:'#444'},grid:{color:'#e0e0e0'}},
+      y:{type:'logarithmic',ticks:{color:'#444'},grid:{color:'#e0e0e0'},
+          title:{display:true,text:'k (log scale)',color:'#444'}}
     }
   }
 });
@@ -117,31 +189,59 @@ new Chart(document.getElementById('improvChart'), {
   type:'bar',
   data:{ labels:GL, datasets:[{
             label: 'SA',
-            data: [90.6, 97.1, 76.9, 97.4, 64.9, 38.2, 94.9, null],
-            backgroundColor: '#4361eecc', borderColor: '#4361ee', borderWidth: 2,
+            data: [90.6, 97.1, 76.9, 97.4, 64.9, 38.2, 94.9, 2.0],
+            backgroundColor: '#4361ee99', borderColor: '#4361ee', borderWidth: 2,
         },{
             label: 'STAGED',
-            data: [90.6, 95.4, 74.1, 94.1, 89.3, 39.1, 91.0, null],
-            backgroundColor: '#7209b7cc', borderColor: '#7209b7', borderWidth: 2,
+            data: [90.6, 95.4, 74.1, 94.1, 89.3, 39.1, 91.0, 3.7],
+            backgroundColor: '#7209b799', borderColor: '#7209b7', borderWidth: 2,
         },{
             label: 'ILS',
             data: [90.6, 97.1, 73.1, 96.7, 58.7, 38.2, 92.1, null],
-            backgroundColor: '#f72585cc', borderColor: '#f72585', borderWidth: 2,
+            backgroundColor: '#f7258599', borderColor: '#f72585', borderWidth: 2,
         },{
             label: 'STAGED-ADAPTIVE',
             data: [89.6, 93.6, 76.9, 95.6, 90.2, 44.1, 92.8, null],
-            backgroundColor: '#f4a261cc', borderColor: '#f4a261', borderWidth: 2,
+            backgroundColor: '#f4a26199', borderColor: '#f4a261', borderWidth: 2,
         }] },
   options:{ responsive:true,
-    plugins:{ legend:{labels:{color:'#e0e0e0'}},
-              title:{display:true,text:'Reduction from baseline (%)',color:'#aac'} },
+    plugins:{ legend:{labels:{color:'#333'}},
+              title:{display:true,text:'Reduction from baseline (%)',color:'#444'} },
     scales:{
-      x:{ticks:{color:'#aac'},grid:{color:'#2a2a4a'}},
-      y:{ticks:{color:'#aac',callback:v=>v+'%'},grid:{color:'#2a2a4a'},
-          title:{display:true,text:'% improvement',color:'#aac'}}
+      x:{ticks:{color:'#444'},grid:{color:'#e0e0e0'}},
+      y:{ticks:{color:'#444',callback:v=>v+'%'},grid:{color:'#e0e0e0'},
+          title:{display:true,text:'% improvement',color:'#444'}}
     }
   }
 });
+(function(){
+  const START_MS      = 1780681228000;
+  const REPORT_MS     = 1780687583459;
+  const REMAIN_AT_GEN = 30.0 * 60;
+  if (!START_MS) return;
+  function fmt(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600), r = sec % 3600;
+    const m = Math.floor(r / 60), s = r % 60;
+    if (h > 0) return h + 'h ' + m + 'm';
+    return m + 'm ' + String(s).padStart(2,'0') + 's';
+  }
+  function tick() {
+    const now     = Date.now();
+    const elapsed = (now - START_MS) / 1000;
+    const left    = Math.max(0, REMAIN_AT_GEN - (now - REPORT_MS) / 1000);
+    const etaDt   = new Date(now + left * 1000);
+    const etaStr  = String(etaDt.getHours()).padStart(2,'0') + ':' + String(etaDt.getMinutes()).padStart(2,'0');
+    const el = document.getElementById('elapsed');
+    const rm = document.getElementById('remaining');
+    const et = document.getElementById('eta');
+    if (el) el.textContent = fmt(elapsed);
+    if (rm) rm.textContent = '~' + Math.ceil(left / 60) + ' min';
+    if (et) et.textContent = etaStr;
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
 </script>
 </body>
 </html>

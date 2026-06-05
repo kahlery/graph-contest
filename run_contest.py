@@ -284,7 +284,8 @@ def best_key(graph, method):
     return f"{graph}__{method}"
 
 
-def update_best(out_root, bests, graph, method, k, totalX, layout_path, run_id):
+def update_best(out_root, bests, graph, method, k, totalX, layout_path, run_id,
+                budget_min=None, n_workers=None, wall_clock_sec=None):
     if not isinstance(k, int):
         return False
     key = best_key(graph, method)
@@ -301,7 +302,9 @@ def update_best(out_root, bests, graph, method, k, totalX, layout_path, run_id):
     if layout_path and Path(layout_path).exists():
         shutil.copy2(layout_path, dest)
     bests[key] = {"k": k, "totalX": totalX,
-                  "run_id": run_id, "layout_path": str(dest)}
+                  "run_id": run_id, "layout_path": str(dest),
+                  "budget_min": budget_min, "n_workers": n_workers,
+                  "wall_clock_sec": wall_clock_sec}
     return True
 
 
@@ -400,8 +403,87 @@ def generate_report(out_root, history, bests, methods_order=None):
                 cells += "<td>—</td><td>—</td>"
             else:
                 kstr = f"<strong>{mk}</strong>" if mk == bk_best else str(mk)
-                cells += f"<td>{kstr}</td><td>{tx or '—'}</td>"
+                bud = br.get("budget_min")
+                nw  = br.get("n_workers")
+                wc  = br.get("wall_clock_sec")
+                tip_bits = []
+                if bud is not None:
+                    tip_bits.append(f"budget {bud} min")
+                if nw is not None:
+                    tip_bits.append(f"{nw} workers")
+                if wc is not None:
+                    tip_bits.append(f"wall {wc}s")
+                if br.get("run_id"):
+                    tip_bits.append(f"run {br['run_id']}")
+                tip = (" title='" + " | ".join(tip_bits) + "'") if tip_bits else ""
+                cells += f"<td{tip}>{kstr}</td><td>{tx or '—'}</td>"
         tbody.append(f"<tr>{cells}</tr>")
+
+    # Per-method runtime & config summary — aggregated across all runs.
+    method_stats = {m: {"combos": 0, "wall_sum": 0.0, "budgets": set(),
+                        "workers": set(), "graphs": set()} for m in methods}
+    for run in history.get("runs", []):
+        for c in run.get("combos", []):
+            m = c.get("method")
+            if m not in method_stats:
+                continue
+            st = method_stats[m]
+            st["combos"] += 1
+            wc = c.get("wall_clock_sec")
+            if isinstance(wc, (int, float)):
+                st["wall_sum"] += wc
+            if c.get("budget_min") is not None:
+                st["budgets"].add(c["budget_min"])
+            if c.get("n_workers") is not None:
+                st["workers"].add(c["n_workers"])
+            st["graphs"].add(c.get("graph"))
+
+    def _fmt_set(s, suffix=""):
+        if not s:
+            return "—"
+        vals = sorted(s)
+        if len(vals) == 1:
+            return f"{vals[0]}{suffix}"
+        return f"{vals[0]}–{vals[-1]}{suffix}"
+
+    def _fmt_dur(sec):
+        sec = int(sec)
+        h, rem = divmod(sec, 3600)
+        m_, s_ = divmod(rem, 60)
+        if h:
+            return f"{h}h {m_}m"
+        if m_:
+            return f"{m_}m {s_}s"
+        return f"{s_}s"
+
+    method_summary_rows = []
+    for m in methods:
+        st = method_stats[m]
+        if st["combos"] == 0:
+            continue
+        avg_wall = st["wall_sum"] / st["combos"] if st["combos"] else 0
+        color = METHOD_COLORS.get(m, "#333")
+        method_summary_rows.append(
+            f"<tr>"
+            f"<td style='color:{color};font-weight:700'>{m.upper()}</td>"
+            f"<td>{_fmt_set(st['budgets'], ' min')}</td>"
+            f"<td>{_fmt_set(st['workers'])}</td>"
+            f"<td>{st['combos']}</td>"
+            f"<td>{len(st['graphs'])}</td>"
+            f"<td>{_fmt_dur(avg_wall)}</td>"
+            f"<td>{_fmt_dur(st['wall_sum'])}</td>"
+            f"</tr>")
+    if method_summary_rows:
+        method_summary_html = (
+            "<h2>Method Runtime &amp; Config</h2>\n"
+            "<div class='card'><table>"
+            "<thead><tr><th>Method</th><th>Budget / combo</th><th>Workers</th>"
+            "<th>Combos run</th><th>Graphs</th><th>Avg wall / combo</th>"
+            "<th>Total wall</th></tr></thead><tbody>"
+            + "\n".join(method_summary_rows)
+            + "</tbody></table></div>")
+    else:
+        method_summary_html = ""
 
     # Run history section — detailed combo log.
     history_html_parts = []
@@ -642,6 +724,8 @@ def generate_report(out_root, history, bests, methods_order=None):
   <tbody>{"".join(tbody)}</tbody>
 </table>
 </div>
+
+{method_summary_html}
 
 <h2>k-value Comparison</h2>
 <div class="charts">
@@ -887,7 +971,9 @@ def main():
                 improv = round((baseline_k - best_k) / baseline_k * 100, 1)
 
             new_best = update_best(
-                out_root, bests, gname, method, best_k, best_tx, best_out, run_id)
+                out_root, bests, gname, method, best_k, best_tx, best_out, run_id,
+                budget_min=budget, n_workers=args.workers,
+                wall_clock_sec=round(wall_total, 1))
 
             seeds = [w["seed"] for w in workers_out if w]
             flag  = "" if valid else "  [INVALID]"

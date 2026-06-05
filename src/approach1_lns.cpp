@@ -572,6 +572,10 @@ public:
 
     Grid grid;
 
+    // Vertex spatial grid (shares the edge grid's cell geometry). Built and
+    // used only during the initial-layout repair. Not maintained during SA.
+    vector<vector<int>> vCells;
+
     int        bestK = INT_MAX;
     ll         bestX = LLONG_MAX;
     vector<Pt> bestPos;
@@ -618,14 +622,31 @@ public:
         for (int i = 0; i < m; i++)
             grid.addEdge(i, pos[edges[i].u], pos[edges[i].v]);
 
-        rebuildOccupiedAndDisentangle();
-        for (int i = 0; i < m; i++) grid.removeEdge(i);
-        for (int i = 0; i < m; i++)
-            grid.addEdge(i, pos[edges[i].u], pos[edges[i].v]);
+        // Produce a *valid* initial layout (distinct positions, no vertex on a
+        // non-incident edge). Repair the given layout in place; if it cannot
+        // converge (dense graphs in a small canvas), scatter and repair.
+        rebuildOccupied();
+        syncEdgeGrid();
+        bool ok = repairLayout();
+        for (int attempt = 0; attempt < 12 && !ok; attempt++) {
+            scatterPositions(0x9E3779B97F4A7C15ull * (uint64_t)(attempt + 1));
+            ok = repairLayout();
+        }
+        if (!ok) {
+            cerr << "warning: could not fully resolve vertex-edge overlaps "
+                    "in initial layout\n";
+        }
 
         computeAllCrossings();
         rebuildCum();
         saveBest();
+    }
+
+    // Rebuild the edge grid so it reflects the current positions.
+    void syncEdgeGrid() {
+        for (int i = 0; i < m; i++) grid.removeEdge(i);
+        for (int i = 0; i < m; i++)
+            grid.addEdge(i, pos[edges[i].u], pos[edges[i].v]);
     }
 
     void rebuildOccupied() {
@@ -678,36 +699,134 @@ public:
         return -1;
     }
 
-    void rebuildOccupiedAndDisentangle() {
-        rebuildOccupied();
-        mt19937_64 lr(0xC0FFEE);
-        for (int attempt = 0; attempt < 20000; attempt++) {
-            int v = findVertexEdgeOverlap();
-            if (v < 0) return;
-            int tries = 0;
-            while (tries++ < 200) {
-                ll range = (ll)(1 + tries / 8);
-                ll dx = ((ll)(int)lr() % (2 * range + 1)) - range;
-                ll dy = ((ll)(int)lr() % (2 * range + 1)) - range;
-                Pt q  = {pos[v].x + dx, pos[v].y + dy};
-                if (q.x < ox)        q.x = ox;
-                if (q.x > ox + W)    q.x = ox + W;
-                if (q.y < oy)        q.y = oy;
-                if (q.y > oy + H)    q.y = oy + H;
-                if (q == pos[v]) continue;
-                if (occupied.count(q) && occupied[q] != v) continue;
-                Pt old = pos[v];
-                occupied.erase(old);
-                pos[v] = q;
-                occupied[q] = v;
-                if (!wouldCauseVertexEdgeOverlap(v, q)) break;
-                occupied.erase(q);
-                pos[v] = old;
-                occupied[old] = v;
+    // ----- grid-accelerated initial-layout repair --------------------
+    // See src/main.cpp for the rationale. The old O(n*m)-per-probe routine was
+    // too slow and non-convergent on dense graphs in a small canvas (e.g.
+    // Automatic-8), leaving an invalid layout that makes main exit rc=3.
+
+    inline int vCellOf(const Pt& p) const {
+        return grid.cy(p.y) * grid.gw + grid.cx(p.x);
+    }
+    void buildVertexGrid() {
+        vCells.assign((size_t)grid.gw * grid.gh, {});
+        for (int i = 0; i < n; i++) vCells[vCellOf(pos[i])].push_back(i);
+    }
+    void vGridMove(int v, const Pt& oldp, const Pt& newp) {
+        int oc = vCellOf(oldp), nc = vCellOf(newp);
+        if (oc == nc) return;
+        auto& ov = vCells[oc];
+        for (size_t i = 0; i < ov.size(); i++)
+            if (ov[i] == v) { ov[i] = ov.back(); ov.pop_back(); break; }
+        vCells[nc].push_back(v);
+    }
+    void moveVertexAll(int v, const Pt& q) {
+        Pt old = pos[v];
+        if (old == q) return;
+        for (int e : nodeEdges[v]) grid.removeEdge(e);
+        occupied.erase(old);
+        pos[v] = q;
+        occupied[q] = v;
+        for (int e : nodeEdges[v])
+            grid.addEdge(e, pos[edges[e].u], pos[edges[e].v]);
+        vGridMove(v, old, q);
+    }
+
+    bool wouldCauseVertexEdgeOverlapFast(int v, const Pt& newPos) {
+        bool bad = false;
+        grid.newQuery();
+        grid.forCandidates(newPos, newPos, [&](int e) {
+            if (bad) return;
+            int a = edges[e].u, b = edges[e].v;
+            if (a == v || b == v) return;
+            if (pointOnSegmentStrict(newPos, pos[a], pos[b])) bad = true;
+        });
+        if (bad) return true;
+        for (int e : nodeEdges[v]) {
+            int other   = (edges[e].u == v ? edges[e].v : edges[e].u);
+            const Pt& b = pos[other];
+            int cx0, cx1, cy0, cy1;
+            grid.rangeFor(newPos, b, cx0, cx1, cy0, cy1);
+            for (int yy = cy0; yy <= cy1; yy++) {
+                int row = yy * grid.gw;
+                for (int xx = cx0; xx <= cx1; xx++) {
+                    for (int u : vCells[row + xx]) {
+                        if (u == v || u == other) continue;
+                        if (pointOnSegmentStrict(pos[u], newPos, b)) return true;
+                    }
+                }
             }
         }
-        if (findVertexEdgeOverlap() >= 0)
-            cerr << "warning: could not fully resolve vertex-edge overlaps in initial layout\n";
+        return false;
+    }
+
+    int findVertexEdgeOverlapFast() {
+        for (int v = 0; v < n; v++) {
+            bool bad = false;
+            const Pt& p = pos[v];
+            grid.newQuery();
+            grid.forCandidates(p, p, [&](int e) {
+                if (bad) return;
+                int a = edges[e].u, b = edges[e].v;
+                if (a == v || b == v) return;
+                if (pointOnSegmentStrict(p, pos[a], pos[b])) bad = true;
+            });
+            if (bad) return v;
+        }
+        return -1;
+    }
+
+    void scatterPositions(uint64_t seed) {
+        mt19937_64 r(seed);
+        occupied.clear();
+        occupied.reserve((size_t)n * 2);
+        uniform_int_distribution<ll> dx(ox, ox + W), dy(oy, oy + H);
+        for (int i = 0; i < n; i++) {
+            Pt q; int tries = 0;
+            do { q = {dx(r), dy(r)}; } while (occupied.count(q) && ++tries < 2000);
+            pos[i] = q;
+            occupied[q] = i;
+        }
+        syncEdgeGrid();
+    }
+
+    bool repairLayout() {
+        buildVertexGrid();
+        mt19937_64 lr(0xC0FFEEull);
+
+        auto relocate = [&](int v) -> bool {
+            Pt cur = pos[v];
+            for (int radius = 1; radius <= 256; radius *= 2) {
+                for (int t = 0; t < 32; t++) {
+                    ll dx = ((ll)(uint32_t)lr() % (2 * radius + 1)) - radius;
+                    ll dy = ((ll)(uint32_t)lr() % (2 * radius + 1)) - radius;
+                    Pt q = {cur.x + dx, cur.y + dy};
+                    if (q.x < ox)     q.x = ox;
+                    if (q.x > ox + W) q.x = ox + W;
+                    if (q.y < oy)     q.y = oy;
+                    if (q.y > oy + H) q.y = oy + H;
+                    if (q == cur) continue;
+                    auto it = occupied.find(q);
+                    if (it != occupied.end() && it->second != v) continue;
+                    moveVertexAll(v, q);
+                    if (!wouldCauseVertexEdgeOverlapFast(v, q)) return true;
+                    moveVertexAll(v, cur);
+                }
+            }
+            return false;
+        };
+
+        const int MAXPASS = 60;
+        for (int pass = 0; pass < MAXPASS; pass++) {
+            int fixed = 0, stuck = 0;
+            for (int v = 0; v < n; v++) {
+                if (!wouldCauseVertexEdgeOverlapFast(v, pos[v])) continue;
+                if (relocate(v)) fixed++;
+                else             stuck++;
+            }
+            if (fixed == 0)
+                return stuck == 0;
+        }
+        return findVertexEdgeOverlapFast() < 0;
     }
 
     // ----- core --------------------------------------------------------
@@ -1475,7 +1594,7 @@ int main(int argc, char** argv) {
     solver.statusInterval = max(0.05, statusInterval);
     solver.runStartedAt   = steady_clock::now();
     solver.setup(g);
-    int veInit = solver.findVertexEdgeOverlap();
+    int veInit = solver.findVertexEdgeOverlapFast();
     cerr << "Initial: k=" << solver.kVal
          << " totalX=" << solver.totalX
          << "  vertexEdgeOverlap=" << (veInit < 0 ? "no" : "YES")
@@ -1519,7 +1638,7 @@ int main(int argc, char** argv) {
 
     {
         solver.restoreBest();
-        int veFinal = solver.findVertexEdgeOverlap();
+        int veFinal = solver.findVertexEdgeOverlapFast();
         if (veFinal >= 0) {
             cerr << "ERROR: best layout has vertex-edge overlap (vertex "
                  << veFinal << "). This should not happen.\n";
