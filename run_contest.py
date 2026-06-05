@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT      = Path(__file__).resolve().parent
@@ -450,6 +450,69 @@ def generate_report(out_root, history, bests, methods_order=None):
             f'<span><span class="dot" style="background:{METHOD_COLORS.get(m, "#fff")}"></span>{m.upper()}</span>'
             for m in methods))
 
+    # --- progress section ---
+    progress_html = ""
+    if history.get("runs"):
+        latest      = history["runs"][-1]
+        p_graphs    = latest.get("graphs", [])
+        p_methods   = latest.get("methods", [])
+        total       = len(p_graphs) * len(p_methods)
+        done_combos = latest.get("combos", [])
+        done        = len(done_combos)
+        minutes_map = latest.get("minutes_map", {})
+
+        graph_budget = {c["graph"]: c["budget_min"] for c in done_combos}
+        done_set     = {(c["graph"], c["method"]) for c in done_combos}
+
+        def _budget(g):
+            if g in graph_budget:
+                return graph_budget[g]
+            try:
+                idx = int(g.split("-")[-1])
+                return minutes_map.get(group_for(idx), 10)
+            except Exception:
+                return 10
+
+        remaining_min = sum(
+            _budget(g) for g in p_graphs for m in p_methods
+            if (g, m) not in done_set
+        )
+        next_combo = next(
+            ((g, m) for g in p_graphs for m in p_methods if (g, m) not in done_set),
+            None
+        )
+
+        try:
+            start_dt    = datetime.fromisoformat(latest["timestamp"])
+            elapsed_sec = (datetime.now() - start_dt).total_seconds()
+            h, rem      = divmod(int(elapsed_sec), 3600)
+            elapsed_str = f"{h}h {rem // 60}m"
+            eta_dt      = datetime.now() + timedelta(seconds=remaining_min * 60)
+            eta_str     = eta_dt.strftime("%H:%M")
+        except Exception:
+            elapsed_str = "?"
+            eta_str     = "?"
+
+        pct      = done / total * 100 if total else 0
+        next_str = (f"{next_combo[0]} &nbsp;/&nbsp; <em>{next_combo[1]}</em>"
+                    if next_combo else "all combos complete")
+
+        progress_html = f"""
+<h2>Run Progress</h2>
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+    <span style="font-size:1.05rem;font-weight:600">{done} <span style="color:var(--muted);font-weight:400">/ {total} combos done</span></span>
+    <span style="color:var(--muted);font-size:.88rem">elapsed {elapsed_str}&nbsp;&nbsp;|&nbsp;&nbsp;ETA <strong style="color:#e0e0e0">{eta_str}</strong></span>
+  </div>
+  <div style="background:#2a2a4a;border-radius:8px;height:20px;overflow:hidden;margin-bottom:10px">
+    <div style="background:linear-gradient(90deg,#4361ee,#f72585);width:{pct:.1f}%;height:100%;border-radius:8px"></div>
+  </div>
+  <div style="display:flex;justify-content:space-between;font-size:.84rem;color:var(--muted)">
+    <span>Next up: <strong style="color:#aac">{next_str}</strong></span>
+    <span>~{remaining_min} min remaining</span>
+  </div>
+</div>"""
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     n_runs = len(history.get("runs", []))
 
@@ -499,7 +562,7 @@ def generate_report(out_root, history, bests, methods_order=None):
 <div class="sub">Generated {now} &nbsp;|&nbsp; {len(graphs)} graphs &nbsp;|&nbsp; {n_runs} runs</div>
 
 <div class="legend">{legend}</div>
-
+{progress_html}
 <h2>Best Results (All Runs)</h2>
 <div class="card">
 <table>
@@ -766,12 +829,13 @@ def main():
                     break
             if not found:
                 _h["runs"].append({
-                    "id":        run_id,
-                    "timestamp": datetime.now().isoformat(timespec="seconds"),
-                    "methods":   methods,
-                    "workers":   args.workers,
-                    "graphs":    [f"Automatic-{i}" for i in indices],
-                    "combos":    all_combos,
+                    "id":          run_id,
+                    "timestamp":   datetime.now().isoformat(timespec="seconds"),
+                    "methods":     methods,
+                    "workers":     args.workers,
+                    "graphs":      [f"Automatic-{i}" for i in indices],
+                    "minutes_map": minutes_map,
+                    "combos":      all_combos,
                 })
             save_json(out_root / "history.json", _h)
             generate_report(out_root, _h, bests, methods_order=methods)
