@@ -375,15 +375,15 @@ def generate_report(out_root, history, bests, methods_order=None):
         datasets_js_parts.append(f"""{{
             label: '{m.upper()}',
             data: {_js(method_data[m])},
-            backgroundColor: '{c}cc', borderColor: '{c}', borderWidth: 2,
+            backgroundColor: '{c}99', borderColor: '{c}', borderWidth: 2,
         }}""")
         improv_parts.append(f"""{{
             label: '{m.upper()}',
             data: {_js(improv_data[m])},
-            backgroundColor: '{c}cc', borderColor: '{c}', borderWidth: 2,
+            backgroundColor: '{c}99', borderColor: '{c}', borderWidth: 2,
         }}""")
 
-    _fallback = "#fff"
+    _fallback = "#333"
     mh = "".join(
         f"<th colspan='2' style='color:{METHOD_COLORS.get(m, _fallback)}'>{m.upper()}</th>"
         for m in methods)
@@ -445,9 +445,9 @@ def generate_report(out_root, history, bests, methods_order=None):
     history_html = "\n".join(history_html_parts) or "<p>No runs yet.</p>"
 
     legend = (
-        '<span><span class="dot" style="background:#aaa"></span>Baseline</span>'
+        '<span><span class="dot" style="background:#999"></span>Baseline</span>'
         + "".join(
-            f'<span><span class="dot" style="background:{METHOD_COLORS.get(m, "#fff")}"></span>{m.upper()}</span>'
+            f'<span><span class="dot" style="background:{METHOD_COLORS.get(m, "#555")}"></span>{m.upper()}</span>'
             for m in methods))
 
     # --- progress section ---
@@ -500,17 +500,17 @@ def generate_report(out_root, history, bests, methods_order=None):
         progress_html = f"""
 <h2>Run Progress</h2>
 <div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
-    <span style="font-size:1.05rem;font-weight:600">{done} <span style="color:var(--muted);font-weight:400">/ {total} combos done</span></span>
-    <span style="color:var(--muted);font-size:.88rem">elapsed {elapsed_str}&nbsp;&nbsp;|&nbsp;&nbsp;ETA <strong style="color:#e0e0e0">{eta_str}</strong></span>
+  <div class="prog-stats">
+    <div><span class="prog-stat-label">Combos Done</span><span class="prog-stat-value">{done} / {total}</span></div>
+    <div><span class="prog-stat-label">Progress</span><span class="prog-stat-value">{pct:.1f}%</span></div>
+    <div><span class="prog-stat-label">Elapsed</span><span class="prog-stat-value">{elapsed_str}</span></div>
+    <div><span class="prog-stat-label">Remaining</span><span class="prog-stat-value">~{remaining_min} min</span></div>
+    <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta">{eta_str}</span></div>
   </div>
-  <div style="background:#2a2a4a;border-radius:8px;height:20px;overflow:hidden;margin-bottom:10px">
-    <div style="background:linear-gradient(90deg,#4361ee,#f72585);width:{pct:.1f}%;height:100%;border-radius:8px"></div>
+  <div class="progress-bar-outer">
+    <div class="progress-bar-inner" style="width:{pct:.1f}%"></div>
   </div>
-  <div style="display:flex;justify-content:space-between;font-size:.84rem;color:var(--muted)">
-    <span>Next up: <strong style="color:#aac">{next_str}</strong></span>
-    <span>~{remaining_min} min remaining</span>
-  </div>
+  <div class="prog-next">Currently running: <strong>{next_str}</strong></div>
 </div>"""
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -525,36 +525,49 @@ def generate_report(out_root, history, bests, methods_order=None):
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
   :root {{
-    --bg:#0f0f1a; --card:#1a1a2e; --border:#2a2a4a;
-    --text:#e0e0e0; --muted:#888;
+    --bg:#f0f0f0; --card:#ffffff; --border:#c4c4c4;
+    --text:#111111; --muted:#666666; --th-bg:#e4e4e4;
+    --row-alt:#f7f7f7; --row-hover:#eef2ff;
+    --best:#1a6e2e; --accent:#4361ee;
   }}
   * {{ box-sizing:border-box; margin:0; padding:0; }}
   body {{ background:var(--bg); color:var(--text);
-          font-family:'Segoe UI',system-ui,sans-serif; padding:24px; }}
-  h1 {{ font-size:1.8rem; margin-bottom:4px; }}
-  .sub {{ color:var(--muted); font-size:.9rem; margin-bottom:28px; }}
-  h2 {{ font-size:1.1rem; margin:28px 0 10px; color:#aac;
-        border-bottom:1px solid var(--border); padding-bottom:6px; }}
-  .card {{ background:var(--card); border:1px solid var(--border);
-           border-radius:10px; padding:20px; margin-bottom:20px; }}
-  .charts {{ display:grid; grid-template-columns:1fr 1fr; gap:20px; }}
+          font-family:'Segoe UI',system-ui,sans-serif;
+          padding:32px; max-width:1400px; margin:0 auto; }}
+  h1 {{ font-size:1.6rem; font-weight:700; padding-bottom:10px;
+        border-bottom:3px solid var(--accent); margin-bottom:6px; }}
+  .sub {{ color:var(--muted); font-size:.85rem; margin-bottom:24px; margin-top:4px; }}
+  h2 {{ font-size:.76rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+        color:var(--muted); border-bottom:1px solid var(--border);
+        padding-bottom:4px; margin:24px 0 10px; }}
+  .card {{ background:var(--card); border:1px solid var(--border); padding:20px; margin-bottom:16px; }}
+  .charts {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
   @media(max-width:900px){{ .charts{{ grid-template-columns:1fr; }} }}
-  canvas {{ max-height:320px; }}
-  table {{ width:100%; border-collapse:collapse; font-size:.84rem; }}
+  canvas {{ max-height:300px; }}
+  table {{ width:100%; border-collapse:collapse; font-size:.82rem; }}
   th,td {{ padding:6px 10px; border:1px solid var(--border); text-align:right; }}
-  th {{ background:#1e1e3a; color:#aac; text-align:center; }}
+  th {{ background:var(--th-bg); color:#333; text-align:center; font-weight:700;
+        font-size:.74rem; letter-spacing:.05em; text-transform:uppercase; }}
   td:first-child,th:first-child {{ text-align:left; }}
-  tr:nth-child(even) {{ background:#14142a; }}
-  tr:hover {{ background:#20204a; }}
-  strong {{ color:#7aff8a; }}
-  details {{ background:var(--card); border:1px solid var(--border);
-             border-radius:8px; padding:12px; margin-bottom:10px; }}
-  summary {{ cursor:pointer; font-weight:600; color:#aac; }}
-  summary:hover {{ color:#fff; }}
-  .inner {{ margin-top:10px; font-size:.8rem; }}
-  .inner td {{ padding:4px 8px; }}
-  .legend {{ display:flex; gap:14px; flex-wrap:wrap; margin-bottom:10px; font-size:.84rem; }}
-  .dot {{ width:11px; height:11px; border-radius:50%; display:inline-block; margin-right:4px; }}
+  tr:nth-child(even) {{ background:var(--row-alt); }}
+  tr:hover {{ background:var(--row-hover); }}
+  strong {{ color:var(--best); font-weight:700; }}
+  details {{ background:var(--card); border:1px solid var(--border); padding:10px 14px; margin-bottom:6px; }}
+  summary {{ cursor:pointer; font-weight:600; color:#333; font-size:.85rem; }}
+  summary:hover {{ color:var(--accent); }}
+  .inner {{ margin-top:8px; font-size:.77rem; }}
+  .inner td {{ padding:3px 8px; }}
+  .legend {{ display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:.82rem; }}
+  .dot {{ width:10px; height:10px; display:inline-block; margin-right:5px; }}
+  .progress-bar-outer {{ background:#d8d8d8; height:20px; margin:10px 0; }}
+  .progress-bar-inner {{ height:100%; background:linear-gradient(90deg,#4361ee,#f72585); }}
+  .prog-stats {{ display:flex; gap:32px; flex-wrap:wrap; margin-bottom:8px; }}
+  .prog-stat-label {{ color:var(--muted); font-size:.7rem; text-transform:uppercase;
+                      letter-spacing:.07em; font-weight:700; display:block; margin-bottom:2px; }}
+  .prog-stat-value {{ font-size:.92rem; font-weight:600; color:var(--text); }}
+  .prog-stat-value.eta {{ color:var(--accent); }}
+  .prog-next {{ font-size:.82rem; color:var(--muted); margin-top:6px; }}
+  .prog-next strong {{ color:#333; font-weight:600; }}
 </style>
 </head>
 <body>
@@ -589,12 +602,12 @@ new Chart(document.getElementById('kChart'), {{
   type:'bar',
   data:{{ labels:GL, datasets:[{",".join(datasets_js_parts)}] }},
   options:{{ responsive:true,
-    plugins:{{ legend:{{labels:{{color:'#e0e0e0'}}}},
-              title:{{display:true,text:'k-value (lower=better)',color:'#aac'}} }},
+    plugins:{{ legend:{{labels:{{color:'#333'}}}},
+              title:{{display:true,text:'k-value (lower is better)',color:'#444'}} }},
     scales:{{
-      x:{{ticks:{{color:'#aac'}},grid:{{color:'#2a2a4a'}}}},
-      y:{{type:'logarithmic',ticks:{{color:'#aac'}},grid:{{color:'#2a2a4a'}},
-          title:{{display:true,text:'k (log)',color:'#aac'}}}}
+      x:{{ticks:{{color:'#444'}},grid:{{color:'#e0e0e0'}}}},
+      y:{{type:'logarithmic',ticks:{{color:'#444'}},grid:{{color:'#e0e0e0'}},
+          title:{{display:true,text:'k (log scale)',color:'#444'}}}}
     }}
   }}
 }});
@@ -602,12 +615,12 @@ new Chart(document.getElementById('improvChart'), {{
   type:'bar',
   data:{{ labels:GL, datasets:[{",".join(improv_parts)}] }},
   options:{{ responsive:true,
-    plugins:{{ legend:{{labels:{{color:'#e0e0e0'}}}},
-              title:{{display:true,text:'Reduction from baseline (%)',color:'#aac'}} }},
+    plugins:{{ legend:{{labels:{{color:'#333'}}}},
+              title:{{display:true,text:'Reduction from baseline (%)',color:'#444'}} }},
     scales:{{
-      x:{{ticks:{{color:'#aac'}},grid:{{color:'#2a2a4a'}}}},
-      y:{{ticks:{{color:'#aac',callback:v=>v+'%'}},grid:{{color:'#2a2a4a'}},
-          title:{{display:true,text:'% improvement',color:'#aac'}}}}
+      x:{{ticks:{{color:'#444'}},grid:{{color:'#e0e0e0'}}}},
+      y:{{ticks:{{color:'#444',callback:v=>v+'%'}},grid:{{color:'#e0e0e0'}},
+          title:{{display:true,text:'% improvement',color:'#444'}}}}
     }}
   }}
 }});
