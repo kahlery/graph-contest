@@ -338,10 +338,6 @@ def generate_report(out_root, history, bests, methods_order=None):
         methods = sorted(all_methods)
 
     graphs = sorted(all_graphs, key=lambda s: (len(s), s))
-    if not graphs:
-        (out_root / "report.html").write_text(
-            "<html><body>No results yet.</body></html>")
-        return
 
     baseline_data = [baseline_by_graph.get(g) for g in graphs]
     method_data   = {m: [best_results.get((g, m), {}).get("k") for g in graphs]
@@ -442,7 +438,7 @@ def generate_report(out_root, history, bests, methods_order=None):
           {inner}
         </details>""")
 
-    history_html = "\n".join(history_html_parts) or "<p>No runs yet.</p>"
+    history_html = "\n".join(history_html_parts)
 
     legend = (
         '<span><span class="dot" style="background:#999"></span>Baseline</span>'
@@ -733,6 +729,7 @@ def main():
 
     indices = parse_graph_spec(args.graphs)
     ensure_binaries()
+    generate_report(out_root, history, bests)
 
     run_id    = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir   = out_root / "runs" / run_id
