@@ -23,6 +23,7 @@
 #include <cassert>
 #include <cctype>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
