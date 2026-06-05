@@ -448,7 +448,8 @@ def generate_report(out_root, history, bests, methods_order=None):
 
     # --- progress section ---
     progress_html = ""
-    start_ts_iso  = ""
+    start_ts_ms   = 0
+    report_gen_ms = 0
     remaining_min = 0
     if history.get("runs"):
         latest      = history["runs"][-1]
@@ -488,11 +489,13 @@ def generate_report(out_root, history, bests, methods_order=None):
             elapsed_str = (f"{h}h {m_val}m" if h else f"{m_val}m {rem % 60}s")
             eta_dt      = datetime.now() + timedelta(seconds=remaining_min * 60)
             eta_str     = eta_dt.strftime("%H:%M")
-            start_ts_iso = start_dt.isoformat()
+            start_ts_ms    = int(start_dt.timestamp() * 1000)
+            report_gen_ms  = int(datetime.now().timestamp() * 1000)
         except Exception:
-            elapsed_str  = "?"
-            eta_str      = "?"
-            start_ts_iso = ""
+            elapsed_str   = "?"
+            eta_str       = "?"
+            start_ts_ms   = 0
+            report_gen_ms = 0
 
         pct      = done / total * 100 if total else 0
         next_str = (f"{next_combo[0]} &nbsp;/&nbsp; <em>{next_combo[1].upper()}</em>"
@@ -678,10 +681,10 @@ new Chart(document.getElementById('improvChart'), {{
   }}
 }});
 (function(){{
-  const startTs = "{start_ts_iso}";
-  const remainingSec = {remaining_min} * 60;
-  if (!startTs) return;
-  const startMs = new Date(startTs).getTime();
+  const START_MS      = {start_ts_ms};
+  const REPORT_MS     = {report_gen_ms};
+  const REMAIN_AT_GEN = {remaining_min} * 60;
+  if (!START_MS) return;
   function fmt(sec) {{
     sec = Math.max(0, Math.floor(sec));
     const h = Math.floor(sec / 3600), r = sec % 3600;
@@ -690,10 +693,11 @@ new Chart(document.getElementById('improvChart'), {{
     return m + 'm ' + String(s).padStart(2,'0') + 's';
   }}
   function tick() {{
-    const elapsed = (Date.now() - startMs) / 1000;
-    const left    = Math.max(0, remainingSec - (elapsed - (remainingSec > 0 ? 0 : 0)));
-    const etaDt   = new Date(Date.now() + left * 1000);
-    const etaStr  = etaDt.getHours().toString().padStart(2,'0') + ':' + etaDt.getMinutes().toString().padStart(2,'0');
+    const now     = Date.now();
+    const elapsed = (now - START_MS) / 1000;
+    const left    = Math.max(0, REMAIN_AT_GEN - (now - REPORT_MS) / 1000);
+    const etaDt   = new Date(now + left * 1000);
+    const etaStr  = String(etaDt.getHours()).padStart(2,'0') + ':' + String(etaDt.getMinutes()).padStart(2,'0');
     const el = document.getElementById('elapsed');
     const rm = document.getElementById('remaining');
     const et = document.getElementById('eta');
