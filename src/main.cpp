@@ -987,6 +987,7 @@ public:
         for (int i = 0; i < m; i++)
             grid.addEdge(i, pos[edges[i].u], pos[edges[i].v]);
         rebuildOccupied();
+        buildVertexGrid();        // resync vertex grid for the fast overlap check
         computeAllCrossings();
         rebuildCum();
     }
@@ -1165,6 +1166,8 @@ public:
         pos[plan.v] = plan.newPos;
         occupied[plan.newPos] = plan.v;
         for (int i : incidents) grid.addEdge(i, pos[edges[i].u], pos[edges[i].v]);
+        // keep the vertex grid in sync so the fast overlap check stays correct.
+        vGridMove(plan.v, plan.oldPos, plan.newPos);
 
         // pair-level updates of xs.
         for (auto& pc : plan.pairChanges) {
@@ -1248,7 +1251,7 @@ public:
                 // Forbid layouts where a vertex lies strictly on an edge
                 // it is not incident to (vertex-edge overlap is invalid for
                 // GD-contest scoring: crossings on that edge are ill-defined).
-                if (wouldCauseVertexEdgeOverlap(v, newPos)) {
+                if (wouldCauseVertexEdgeOverlapFast(v, newPos)) {
                     currentTemp *= decT; continue;
                 }
 

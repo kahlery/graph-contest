@@ -945,6 +945,7 @@ public:
         for (int i = 0; i < m; i++)
             grid.addEdge(i, pos[edges[i].u], pos[edges[i].v]);
         rebuildOccupied();
+        buildVertexGrid();        // resync vertex grid for the fast overlap check
         computeAllCrossings();
         rebuildCum();
     }
@@ -1098,6 +1099,8 @@ public:
         pos[plan.v] = plan.newPos;
         occupied[plan.newPos] = plan.v;
         for (int i : incidents) grid.addEdge(i, pos[edges[i].u], pos[edges[i].v]);
+        // keep the vertex grid in sync so the fast overlap check stays correct.
+        vGridMove(plan.v, plan.oldPos, plan.newPos);
 
         for (auto& pc : plan.pairChanges) {
             int e1 = std::get<0>(pc);
@@ -1167,7 +1170,7 @@ public:
                         currentTemp *= decT; continue;
                     }
                 }
-                if (wouldCauseVertexEdgeOverlap(v, newPos)) {
+                if (wouldCauseVertexEdgeOverlapFast(v, newPos)) {
                     currentTemp *= decT; continue;
                 }
 
@@ -1285,7 +1288,12 @@ public:
                 steady_clock::now() - phaseStartedAt).count();
         };
 
-        if (nhSize    <= 0) nhSize    = max(3, n / 10);
+        // Auto neighbourhood size: n/10, but capped so a single LNS iteration
+        // (nhSize * candidates planMoves) stays bounded on huge graphs. Without
+        // this, Automatic-8 (n=10466) would use nhSize=1046, making one
+        // iteration cost tens of thousands of planMoves over ~38M crossings —
+        // minutes per iteration, blowing past the time budget.
+        if (nhSize    <= 0) nhSize    = max(3, min(n / 10, 64));
         if (candidates <= 0) candidates = 50;
 
         const int nhMin = 3;
@@ -1329,6 +1337,12 @@ public:
             // Repair: for each node in the neighbourhood, find the best
             // strictly-improving position among 'candidates' random draws.
             for (int v : nh) {
+                // Bound a single iteration to the time budget. On huge graphs
+                // one node's `candidates` planMoves are costly, so the coarse
+                // per-iteration check at the while() head can overshoot badly;
+                // re-check here so LNS honours `-t` even mid-neighbourhood.
+                if (elapsed() >= timeLimitSec) break;
+
                 bool   foundBetter  = false;
                 double bestDeltaFit = 0.0;  // only commit when dFit < 0
 
@@ -1339,7 +1353,7 @@ public:
                         auto it = occupied.find(newPos);
                         if (it != occupied.end() && it->second != v) continue;
                     }
-                    if (wouldCauseVertexEdgeOverlap(v, newPos)) continue;
+                    if (wouldCauseVertexEdgeOverlapFast(v, newPos)) continue;
 
                     planMove(v, newPos, plan);
 
@@ -1447,7 +1461,7 @@ public:
                     auto it = occupied.find(newPos);
                     if (it != occupied.end() && it->second != v) continue;
                 }
-                if (wouldCauseVertexEdgeOverlap(v, newPos)) continue;
+                if (wouldCauseVertexEdgeOverlapFast(v, newPos)) continue;
                 planMove(v, newPos, plan);
                 commitMove(plan);
                 kicked++;
