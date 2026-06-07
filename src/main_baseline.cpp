@@ -1,29 +1,31 @@
-// approach1_lns.cpp — Large Neighbourhood Search for k-planarity minimization.
+// ===========================================================================
+// BASELINE BUILD — pre-"k-critical vertex selection" snapshot.
+// This is the ORIGINAL Phase-2 vertex selection (weight(v)=1+Σxc[e], the
+// total-crossing bias used in both phases). Kept verbatim so the new default
+// (k-critical selection in src/main.cpp) can be A/B-compared under identical
+// seed/budget. Build: `make baseline` -> ./sakgd_baseline. Do NOT add features
+// here; this file exists only as the control for the comparison.
+// ===========================================================================
+// SAkGD - Simulated Annealing for Graph Drawing Contest 2025 (k-planarity)
+// Faithful C++ reimplementation of the approach described in:
+//   Bianchetti & Moalic, "Winning the GD Challenge for the 4th Time: Our Approach"
+//   33rd International Symposium on Graph Drawing and Network Visualization (GD 2025)
+//   LIPIcs.GD.2025.43
 //
-// Approach 1: LNS (Large Neighbourhood Search)
-//   Destroy: BFS-connected neighbourhood from a high-crossing node.
-//   Repair:  For each node in the neighbourhood, try 'candidates' random
-//            positions and greedily commit the best strictly-improving one.
-//   Restart: Every 'restartEvery' iterations pull back to the best known layout.
+// Three-stage heuristic:
+//   1. Use the input layout (or a random layout) as the starting solution.
+//   2. SA phase 1: minimise the total number of edge crossings.
+//   3. SA phase 2: minimise the k-value (max crossings on a single edge),
+//      using a local k-fitness with total-crossings as a tie-breaker.
 //
-// Two-phase structure mirrors the SA solver:
-//   Phase 1 — minimise total edge crossings.
-//   Phase 2 — minimise k-value (max crossings per edge), crossings as tie-breaker.
+// Build:  make
+// Usage:  ./sakgd -i input.json -o output.json [-t total_minutes] [-p1 phase1_minutes]
+//         ./sakgd input.json output.json
 //
-// Build:  make approach1
-// Usage:  ./approach1 -i input.json -o output.json [-t min] [-p1 min] [-s seed]
-//                     [--mode {sa|lns|ils}]
-//                     [--nh-size K] [--nh-cands R]
-//                     [--ils-perturb P]
-//
-// All options that exist in ./sakgd work identically here.
-// New options:
-//   --mode sa          Run original SA (default, identical to sakgd)
-//   --mode lns         Run Large Neighbourhood Search instead of SA
-//   --mode ils         Run Iterated Local Search (SA + random kicks between rounds)
-//   --nh-size K        Neighbourhood size per LNS iteration (default: n/10, min 3)
-//   --nh-cands R       Candidate positions tried per node in repair (default: 50)
-//   --ils-perturb P    Nodes randomly relocated per ILS kick (default: n/10, min 3)
+// Input JSON format (compatible with the GD contest format):
+//   { "width": <int>, "height": <int>,
+//     "nodes": [ { "id": <id>, "x": <int>, "y": <int> }, ... ],
+//     "edges": [ { "source": <id>, "target": <id> }, ... ] }
 
 #include <algorithm>
 #include <cassert>
@@ -102,7 +104,8 @@ static bool segCross(const Pt& a, const Pt& b, const Pt& c, const Pt& d) {
     return (d1 != d2 && d3 != d4);
 }
 
-// True iff p lies strictly inside open segment (a, b).
+// True iff p lies strictly inside open segment (a, b)
+// (collinear AND strictly between the endpoints; never at the endpoints).
 static inline bool pointOnSegmentStrict(const Pt& p, const Pt& a, const Pt& b) {
     if (p == a || p == b) return false;
     if (crossp(a, b, p) != 0) return false;
@@ -112,7 +115,7 @@ static inline bool pointOnSegmentStrict(const Pt& p, const Pt& a, const Pt& b) {
 }
 
 // ====================================================================
-// Minimal JSON
+// Minimal JSON (only what we need for the GD contest format)
 // ====================================================================
 namespace mjson {
 
@@ -330,7 +333,7 @@ inline void Value::serialize(std::ostream& os, int indent, int depth) const {
 struct GraphData {
     int  n = 0, m = 0;
     ll   W = 0, H = 0;
-    ll   minCoordX = 0, minCoordY = 0;
+    ll   minCoordX = 0, minCoordY = 0;     // canvas origin
     vector<Pt>     pos;
     vector<Edge>   edges;
     vector<string> nodeIdStrs;
@@ -416,7 +419,7 @@ GraphData readGraph(const string& path) {
         if (its == idMap.end()) throw runtime_error("Unknown source: " + s);
         if (itt == idMap.end()) throw runtime_error("Unknown target: " + t);
         Edge e{its->second, itt->second};
-        if (e.u == e.v) continue;
+        if (e.u == e.v) continue;                 // drop self loops
         g.edges.push_back(e);
     }
     g.m = (int)g.edges.size();
@@ -449,17 +452,18 @@ void writeGraph(const string& path, const GraphData& g, const vector<Pt>& pos) {
 }
 
 // ====================================================================
-// Spatial grid
+// Spatial grid for fast crossing-candidate lookup
 // ====================================================================
 class Grid {
 public:
     int gw = 1, gh = 1;
     ll  cellW = 1, cellH = 1;
-    ll  ox = 0, oy = 0;
+    ll  ox = 0, oy = 0;                       // origin
 
-    vector<vector<int>>           cells;
-    vector<vector<pair<int,int>>> edgeCells;
+    vector<vector<int>>           cells;       // edges per cell
+    vector<vector<pair<int,int>>> edgeCells;   // for each edge: (cx, cy)*
 
+    // Re-usable visit marker.
     vector<int> mark;
     int         stamp = 0;
 
@@ -541,13 +545,15 @@ public:
 };
 
 // ====================================================================
-// Solver (SA + LNS)
+// SAkGD solver
 // ====================================================================
 struct MovePlan {
     int  v;
     Pt   oldPos, newPos;
-    vector<tuple<int,int,int>>          pairChanges;
-    vector<tuple<int,int,int>>          edgeCounts;
+    // Pair-level changes (each unique because pairs include the moved node):
+    vector<tuple<int,int,int>>          pairChanges;   // (e1, e2, delta in {-1,+1})
+    // Per-edge oldCount / newCount of edges whose count changed:
+    vector<tuple<int,int,int>>          edgeCounts;    // (edge, oldCount, newCount)
     int  oldGlobalK = 0;
     int  oldLocalK  = 0;
     int  newLocalK  = 0;
@@ -562,27 +568,32 @@ public:
     vector<Edge>         edges;
     vector<vector<int>>  nodeEdges;
 
+    // For each edge: the set of edges it crosses (bidirectional).
     vector<unordered_set<int>> xs;
     vector<int>                xc;
-    vector<int>                cntPerK;
+    vector<int>                cntPerK;        // cntPerK[k] = #edges with xc==k
     int                        kVal    = 0;
     ll                         totalX  = 0;
 
+    // Position uniqueness: at most one node per integer point.
     unordered_map<Pt, int, PtHash> occupied;
 
     Grid grid;
 
     // Vertex spatial grid (shares the edge grid's cell geometry). Built and
-    // used only during the initial-layout repair. Not maintained during SA.
+    // used only during the initial-layout repair to answer "is any vertex on
+    // this segment" queries quickly. Not maintained during SA.
     vector<vector<int>> vCells;
 
+    // best-so-far solution
     int        bestK = INT_MAX;
     ll         bestX = LLONG_MAX;
     vector<Pt> bestPos;
 
+    // Live status writer (optional).
     string                          statusFile;
     string                          statusId   = "run";
-    double                          statusInterval = 1.0;
+    double                          statusInterval = 1.0;   // seconds
     int                             curPhase   = 0;
     double                          curInitT   = 0;
     double                          curTempLim = 0;
@@ -590,25 +601,20 @@ public:
     steady_clock::time_point        runStartedAt = steady_clock::now();
     steady_clock::time_point        phaseStartedAt = steady_clock::now();
 
+    // RNG
     mt19937_64 rng;
 
+    // A coarse cumulative weight array for selectNode (rebuilt periodically).
     vector<double> cum;
     double         totalNodeW = 0.0;
     int            cumStaleCnt = 0;
-
-    // k-critical vertex selection (phase 2): bias selectNode (and thus the LNS
-    // BFS seed) toward vertices incident to bottleneck edges within `kBand` of
-    // kVal. selKBand < 0 => phase-1 total-crossing weighting.
-    int            kBand    = 2;
-    int            selKBand = -1;
-    int            lastCumK = -1;
 
     SAkGD() {
         rng.seed((uint64_t)chrono::steady_clock::now().time_since_epoch().count() ^
                  (uint64_t)(uintptr_t)this);
     }
 
-    // ----- setup -------------------------------------------------------
+    // ----- setup ------------------------------------------------------
     void setup(const GraphData& g) {
         n         = g.n;
         m         = g.m;
@@ -629,9 +635,12 @@ public:
         for (int i = 0; i < m; i++)
             grid.addEdge(i, pos[edges[i].u], pos[edges[i].v]);
 
-        // Produce a *valid* initial layout (distinct positions, no vertex on a
-        // non-incident edge). Repair the given layout in place; if it cannot
-        // converge (dense graphs in a small canvas), scatter and repair.
+        // Produce a *valid* initial layout: distinct integer positions and no
+        // vertex lying on a non-incident edge. First try to repair the given
+        // layout in place; if that cannot converge (typical for dense graphs
+        // in a small canvas whose input is a structured drawing), fall back to
+        // scattering the vertices and repairing the scatter, which has far
+        // fewer collinear degeneracies.
         rebuildOccupied();
         syncEdgeGrid();
         bool ok = repairLayout();
@@ -677,12 +686,23 @@ public:
         }
     }
 
+    // True iff moving vertex v to newPos would cause a vertex-on-edge
+    // overlap (a vertex strictly on the interior of an edge it does not
+    // belong to). Such layouts are invalid for the GD contest, so the
+    // caller must reject the move.
+    //
+    // This is currently O(m + degree(v) * n) per query. For large graphs,
+    // the spatial grid could be used to limit candidates; the simple
+    // version is fine for the graph sizes we target during SA tuning.
     bool wouldCauseVertexEdgeOverlap(int v, const Pt& newPos) const {
+        // 1) newPos must not lie on any edge that does not contain v.
         for (int e = 0; e < m; e++) {
             int a = edges[e].u, b = edges[e].v;
             if (a == v || b == v) continue;
             if (pointOnSegmentStrict(newPos, pos[a], pos[b])) return true;
         }
+        // 2) No other vertex u (and not v's mate on that edge) may lie on
+        //    v's new incident segments.
         const auto& inc = nodeEdges[v];
         for (int e : inc) {
             int otherV = (edges[e].u == v ? edges[e].v : edges[e].u);
@@ -695,6 +715,8 @@ public:
         return false;
     }
 
+    // Detect any vertex-on-edge overlap in the *current* layout and return
+    // the offending vertex id (the one lying on someone else's edge), or -1.
     int findVertexEdgeOverlap() const {
         for (int v = 0; v < n; v++) {
             for (int e = 0; e < m; e++) {
@@ -707,9 +729,15 @@ public:
     }
 
     // ----- grid-accelerated initial-layout repair --------------------
-    // See src/main.cpp for the rationale. The old O(n*m)-per-probe routine was
-    // too slow and non-convergent on dense graphs in a small canvas (e.g.
-    // Automatic-8), leaving an invalid layout that makes main exit rc=3.
+    //
+    // The original disentangler scanned all (vertex, edge) pairs — O(n*m) per
+    // probe — and only relocated one vertex per scan. On dense graphs in a
+    // small canvas (e.g. Automatic-8: 10466 nodes / 20288 edges in 342x294)
+    // that is far too slow and, worse, fails to converge: long structured
+    // edges sweep across the dense vertex field so almost every probed spot
+    // lands on some edge. The routines below use the edge grid and a parallel
+    // vertex grid to answer overlap queries against only nearby candidates,
+    // making full repair tractable and reliable.
 
     inline int vCellOf(const Pt& p) const {
         return grid.cy(p.y) * grid.gw + grid.cx(p.x);
@@ -726,6 +754,9 @@ public:
             if (ov[i] == v) { ov[i] = ov.back(); ov.pop_back(); break; }
         vCells[nc].push_back(v);
     }
+
+    // Move v to q, keeping occupied, the edge grid (for v's incident edges)
+    // and the vertex grid all in sync. Caller guarantees q is free.
     void moveVertexAll(int v, const Pt& q) {
         Pt old = pos[v];
         if (old == q) return;
@@ -738,7 +769,10 @@ public:
         vGridMove(v, old, q);
     }
 
+    // Grid-accelerated equivalent of wouldCauseVertexEdgeOverlap. Requires the
+    // edge grid and vertex grid to reflect the current layout.
     bool wouldCauseVertexEdgeOverlapFast(int v, const Pt& newPos) {
+        // 1) newPos must not lie on a non-incident edge.
         bool bad = false;
         grid.newQuery();
         grid.forCandidates(newPos, newPos, [&](int e) {
@@ -748,6 +782,7 @@ public:
             if (pointOnSegmentStrict(newPos, pos[a], pos[b])) bad = true;
         });
         if (bad) return true;
+        // 2) no other vertex may lie on v's incident edges (newPos -> mate).
         for (int e : nodeEdges[v]) {
             int other   = (edges[e].u == v ? edges[e].v : edges[e].u);
             const Pt& b = pos[other];
@@ -766,6 +801,8 @@ public:
         return false;
     }
 
+    // Grid-accelerated scan: return any vertex lying on a non-incident edge in
+    // the current layout, or -1 if clean. Only the edge grid is required.
     int findVertexEdgeOverlapFast() {
         for (int v = 0; v < n; v++) {
             bool bad = false;
@@ -782,6 +819,9 @@ public:
         return -1;
     }
 
+    // Randomly place all vertices at distinct integer points in the canvas and
+    // rebuild the edge grid. Used as a fallback start when the given layout is
+    // too degenerate to repair in place.
     void scatterPositions(uint64_t seed) {
         mt19937_64 r(seed);
         occupied.clear();
@@ -796,6 +836,8 @@ public:
         syncEdgeGrid();
     }
 
+    // Repair the current layout into a valid GD drawing in place. Returns true
+    // iff fully resolved. Assumes occupied + edge grid already reflect pos.
     bool repairLayout() {
         buildVertexGrid();
         mt19937_64 lr(0xC0FFEEull);
@@ -816,7 +858,7 @@ public:
                     if (it != occupied.end() && it->second != v) continue;
                     moveVertexAll(v, q);
                     if (!wouldCauseVertexEdgeOverlapFast(v, q)) return true;
-                    moveVertexAll(v, cur);
+                    moveVertexAll(v, cur);   // revert
                 }
             }
             return false;
@@ -831,12 +873,12 @@ public:
                 else             stuck++;
             }
             if (fixed == 0)
-                return stuck == 0;
+                return stuck == 0;   // clean if nothing left, else give up
         }
         return findVertexEdgeOverlapFast() < 0;
     }
 
-    // ----- core --------------------------------------------------------
+    // ----- core utility ----------------------------------------------
     inline bool sharesNode(int e1, int e2) const {
         const Edge& a = edges[e1]; const Edge& b = edges[e2];
         return a.u == b.u || a.u == b.v || a.v == b.u || a.v == b.v;
@@ -891,7 +933,7 @@ public:
         bestPos = pos;
     }
 
-    // ----- live status -------------------------------------------------
+    // ----- live status JSON ------------------------------------------
     void writeStatus(double currentTemp, ll moves, ll accepts, const char* state) {
         if (statusFile.empty()) return;
         string tmp = statusFile + ".tmp";
@@ -947,6 +989,7 @@ public:
 
     void restoreBest() {
         if (bestPos.empty()) return;
+        // Tear down grid, set positions, rebuild grid + crossings.
         for (int i = 0; i < m; i++) grid.removeEdge(i);
         pos = bestPos;
         for (int i = 0; i < m; i++)
@@ -957,50 +1000,30 @@ public:
         rebuildCum();
     }
 
-    // ----- selection ---------------------------------------------------
+    // ----- selection -------------------------------------------------
+    // selectNode():  weight of node v = 1 + sum(xc[e] for e incident to v).
+    // We use a cumulative array and refresh it occasionally; perfectly
+    // exact weighting is not required, only the bias.
     void rebuildCum() {
         cum.assign(n, 0.0);
         double t = 0.0;
-        if (selKBand < 0) {
-            // Phase-1 weighting: weight(v) = 1 + sum of crossings on incident edges.
-            for (int i = 0; i < n; i++) {
-                double w = 1.0;
-                for (int e : nodeEdges[i]) w += (double)xc[e];
-                t += w;
-                cum[i] = t;
-            }
-        } else {
-            // k-critical weighting: only edges within `selKBand` of kVal count,
-            // with quadratic emphasis on proximity to kVal. A small flat base
-            // (0.1) keeps a little probability on non-critical vertices so the
-            // search can still relocate neighbours to make room.
-            int thr = kVal - selKBand;
-            if (thr < 1) thr = 1;
-            for (int i = 0; i < n; i++) {
-                double w = 0.1;
-                for (int e : nodeEdges[i]) {
-                    if (xc[e] >= thr) {
-                        double d = (double)(xc[e] - thr + 1);
-                        w += d * d;
-                    }
-                }
-                t += w;
-                cum[i] = t;
-            }
+        for (int i = 0; i < n; i++) {
+            double w = 1.0;
+            for (int e : nodeEdges[i]) w += (double)xc[e];
+            t += w;
+            cum[i] = t;
         }
         totalNodeW  = t;
-        lastCumK    = kVal;
         cumStaleCnt = 0;
     }
 
     int selectNode() {
-        // In k-critical mode the band depends on kVal, so resync whenever kVal
-        // moves (rare in phase 2) in addition to the periodic staleness refresh.
-        if (cumStaleCnt > max(64, n / 4) ||
-            (selKBand >= 0 && kVal != lastCumK)) rebuildCum();
-        if (totalNodeW <= 0)
+        if (cumStaleCnt > max(64, n / 4)) rebuildCum();
+        if (totalNodeW <= 0) {
             return uniform_int_distribution<int>(0, n - 1)(rng);
+        }
         double r = uniform_real_distribution<double>(0.0, totalNodeW)(rng);
+        // binary search over cum
         int lo = 0, hi = n - 1;
         while (lo < hi) {
             int mid = (lo + hi) >> 1;
@@ -1010,6 +1033,8 @@ public:
         return lo;
     }
 
+    // selectPlace():  Gaussian around the current position; with small
+    // probability we sample globally to escape local optima.
     Pt selectPlace(int v, double T, double initT, bool localOnly) {
         double scale = sqrt((double)max<ll>(1, W) * (double)max<ll>(1, H));
         double tFrac = (initT > 0) ? T / initT : 1.0;
@@ -1037,6 +1062,7 @@ public:
         if (ny < oy)        ny = oy;
         if (ny > oy + H)    ny = oy + H;
         if (nx == pos[v].x && ny == pos[v].y) {
+            // Avoid no-op: nudge by 1.
             nx += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
             ny += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
             if (nx < ox)     nx = ox;
@@ -1047,7 +1073,8 @@ public:
         return {nx, ny};
     }
 
-    // ----- move planning / commit --------------------------------------
+    // ----- move planning ---------------------------------------------
+    // Plans the move v -> newPos without modifying any global state.
     void planMove(int v, Pt newPos, MovePlan& plan) {
         plan.v          = v;
         plan.oldPos     = pos[v];
@@ -1061,15 +1088,20 @@ public:
 
         const auto& incidents = nodeEdges[v];
 
+        // Per-edge delta in crossing count (only edges involved in changing pairs).
+        // Use a small hash map keyed on edge id.
         static thread_local unordered_map<int,int> deltaCount;
         deltaCount.clear();
         deltaCount.reserve(incidents.size() * 8 + 4);
 
+        // Old local K (incident edges + edges crossing them).
         for (int i : incidents) {
             if (xc[i] > plan.oldLocalK) plan.oldLocalK = xc[i];
             for (int e2 : xs[i]) if (xc[e2] > plan.oldLocalK) plan.oldLocalK = xc[e2];
         }
 
+        // New crossings of each incident edge.
+        // We re-use the grid's mark array (per query).
         vector<unordered_set<int>> newXsI(incidents.size());
 
         for (size_t k = 0; k < incidents.size(); k++) {
@@ -1088,9 +1120,13 @@ public:
             });
         }
 
+        // Compute pair changes (each pair appears at most once because
+        // shared-node pairs are skipped, and the moved node's incident edges
+        // never pair with each other geometrically).
         for (size_t k = 0; k < incidents.size(); k++) {
             int i = incidents[k];
             const auto& nx_i = newXsI[k];
+            // Removed: was crossing, no longer.
             for (int e : xs[i]) {
                 if (!nx_i.count(e)) {
                     plan.pairChanges.emplace_back(i, e, -1);
@@ -1099,6 +1135,7 @@ public:
                     plan.dCross--;
                 }
             }
+            // Added: now crossing, was not.
             for (int e : nx_i) {
                 if (!xs[i].count(e)) {
                     plan.pairChanges.emplace_back(i, e, +1);
@@ -1109,6 +1146,9 @@ public:
             }
         }
 
+        // Build edgeCounts and newLocalK.
+        // newLocalK should also include the (possibly updated) counts of all
+        // involved edges (incident + their old crossings).
         unordered_set<int> involvedSet;
         for (int i : incidents) {
             involvedSet.insert(i);
@@ -1119,12 +1159,15 @@ public:
         for (int e : involvedSet) {
             int newCnt = xc[e] + (deltaCount.count(e) ? deltaCount[e] : 0);
             if (newCnt > plan.newLocalK) plan.newLocalK = newCnt;
-            if (deltaCount.count(e))
+            if (deltaCount.count(e)) {
                 plan.edgeCounts.emplace_back(e, xc[e], newCnt);
+            }
         }
     }
 
+    // ----- commit ----------------------------------------------------
     void commitMove(const MovePlan& plan) {
+        // grid: incident edges change cells.
         const auto& incidents = nodeEdges[plan.v];
         for (int i : incidents) grid.removeEdge(i);
         occupied.erase(plan.oldPos);
@@ -1134,21 +1177,31 @@ public:
         // keep the vertex grid in sync so the fast overlap check stays correct.
         vGridMove(plan.v, plan.oldPos, plan.newPos);
 
+        // pair-level updates of xs.
         for (auto& pc : plan.pairChanges) {
             int e1 = std::get<0>(pc);
             int e2 = std::get<1>(pc);
             int d  = std::get<2>(pc);
-            if (d > 0) { xs[e1].insert(e2); xs[e2].insert(e1); }
-            else        { xs[e1].erase(e2);  xs[e2].erase(e1);  }
+            if (d > 0) {
+                xs[e1].insert(e2);
+                xs[e2].insert(e1);
+            } else {
+                xs[e1].erase(e2);
+                xs[e2].erase(e1);
+            }
         }
+        // per-edge count updates (this also updates cntPerK & kVal).
         for (auto& ec : plan.edgeCounts) {
-            changeEdgeCount(std::get<0>(ec), std::get<2>(ec));
+            int e        = std::get<0>(ec);
+            int newCount = std::get<2>(ec);
+            changeEdgeCount(e, newCount);
         }
         totalX     += plan.dCross;
         cumStaleCnt += (int)plan.edgeCounts.size();
     }
 
-    // ---- SA -----------------------------------------------------------
+    // ----- SA shell (Algorithm 1) ------------------------------------
+    // Phase: 1 = minimise total crossings, 2 = minimise k-value (dual fitness).
     void runSA(int phase,
                double initT, double decT, double decTW, double tLim,
                double timeLimitSec)
@@ -1158,10 +1211,6 @@ public:
         curInitT   = initT;
         curTempLim = tLim;
         curBudget  = timeLimitSec;
-
-        // Phase 2 minimises the bottleneck k -> k-critical vertex selection.
-        selKBand = (phase == 2 && kBand >= 0) ? kBand : -1;
-        rebuildCum();
 
         auto elapsed = [&] {
             return duration_cast<duration<double>>(
@@ -1188,24 +1237,28 @@ public:
                  << " sT=" << startingTemp << "\n";
             writeStatus(currentTemp, moves, accepts, "running");
         };
-        double nextReport = 0.5;
-        double reportEvery = 30.0;
-        double nextStatus  = 0.0;
+        double nextReport = 0.5;        // first dump comes quickly
+        double reportEvery = 30.0;      // log to stderr every 30s
+        double nextStatus  = 0.0;       // immediate first dump
 
         writeStatus(startingTemp, moves, accepts, "running");
 
         while (kVal > 0 && startingTemp > tLim && elapsed() < timeLimitSec) {
             double currentTemp = startingTemp;
             while (kVal > 0 && currentTemp > tLim && elapsed() < timeLimitSec) {
-                int v      = selectNode();
-                Pt  newPos = selectPlace(v, currentTemp, initT, phase == 2);
+                int v       = selectNode();
+                Pt  newPos  = selectPlace(v, currentTemp, initT, phase == 2);
                 if (newPos == pos[v]) { currentTemp *= decT; continue; }
+                // Forbid two distinct nodes sharing the same point.
                 {
                     auto it = occupied.find(newPos);
                     if (it != occupied.end() && it->second != v) {
                         currentTemp *= decT; continue;
                     }
                 }
+                // Forbid layouts where a vertex lies strictly on an edge
+                // it is not incident to (vertex-edge overlap is invalid for
+                // GD-contest scoring: crossings on that edge are ill-defined).
                 if (wouldCauseVertexEdgeOverlapFast(v, newPos)) {
                     currentTemp *= decT; continue;
                 }
@@ -1232,8 +1285,10 @@ public:
                 if (acc) {
                     commitMove(plan);
                     accepts++;
-                    if (kVal < bestK || (kVal == bestK && totalX < bestX))
+                    if (kVal < bestK ||
+                        (kVal == bestK && totalX < bestX)) {
                         saveBest();
+                    }
                 }
                 moves++;
                 currentTemp *= decT;
@@ -1249,6 +1304,7 @@ public:
                 }
             }
             startingTemp *= decTW;
+            // Each new wave starts from the best known solution (paper, line 19).
             restoreBest();
         }
 
@@ -1256,311 +1312,6 @@ public:
 
         cerr << "[phase " << phase << "] end    moves=" << moves
              << " accepts=" << accepts
-             << "  bestK=" << bestK << " bestX=" << bestX << "\n";
-    }
-
-    // ---- LNS ----------------------------------------------------------
-
-    // BFS-connected neighbourhood of 'size' nodes starting from a
-    // crossing-weight-biased node (same bias as selectNode).
-    vector<int> selectNeighbourhood(int size) {
-        size = max(1, min(size, n));
-        int start = selectNode();
-
-        vector<bool> inNH(n, false);
-        vector<int>  nh, bfsQ;
-        nh.reserve(size);
-        bfsQ.reserve(size);
-
-        inNH[start] = true;
-        nh.push_back(start);
-        bfsQ.push_back(start);
-
-        for (int qi = 0; qi < (int)bfsQ.size() && (int)nh.size() < size; qi++) {
-            int v = bfsQ[qi];
-            vector<int> nbrs;
-            nbrs.reserve(nodeEdges[v].size());
-            for (int e : nodeEdges[v]) {
-                int nb = (edges[e].u == v) ? edges[e].v : edges[e].u;
-                if (!inNH[nb]) nbrs.push_back(nb);
-            }
-            shuffle(nbrs.begin(), nbrs.end(), rng);
-            for (int nb : nbrs) {
-                if ((int)nh.size() >= size) break;
-                inNH[nb] = true;
-                nh.push_back(nb);
-                bfsQ.push_back(nb);
-            }
-        }
-
-        // Pad with random nodes if BFS exhausted (disconnected graph).
-        while ((int)nh.size() < size) {
-            int v = uniform_int_distribution<int>(0, n - 1)(rng);
-            if (!inNH[v]) { inNH[v] = true; nh.push_back(v); }
-        }
-
-        return nh;
-    }
-
-    // LNS main loop.
-    // Phase 1: minimise total crossings.  Phase 2: minimise k-value.
-    // nhSize:     nodes per neighbourhood  (0 = auto: n/10, min 3).
-    // candidates: positions tried per node (0 = auto: 50).
-    // adaptive:   if true, dynamically resize neighbourhood based on improvement rate.
-    void runLNS(int phase,
-                double initT, double tLim,
-                double timeLimitSec,
-                int nhSize, int candidates,
-                bool adaptive = false)
-    {
-        phaseStartedAt = steady_clock::now();
-        curPhase   = 10 + phase;   // 11 / 12 so the dashboard can distinguish
-        curInitT   = initT;
-        curTempLim = tLim;
-        curBudget  = timeLimitSec;
-
-        // Phase 2 minimises the bottleneck k -> k-critical seed selection for
-        // the destroy neighbourhood (selectNeighbourhood starts from selectNode).
-        selKBand = (phase == 2 && kBand >= 0) ? kBand : -1;
-        rebuildCum();
-
-        auto elapsed = [&] {
-            return duration_cast<duration<double>>(
-                steady_clock::now() - phaseStartedAt).count();
-        };
-
-        // Auto neighbourhood size: n/10, but capped so a single LNS iteration
-        // (nhSize * candidates planMoves) stays bounded on huge graphs. Without
-        // this, Automatic-8 (n=10466) would use nhSize=1046, making one
-        // iteration cost tens of thousands of planMoves over ~38M crossings —
-        // minutes per iteration, blowing past the time budget.
-        if (nhSize    <= 0) nhSize    = max(3, min(n / 10, 64));
-        if (candidates <= 0) candidates = 50;
-
-        const int nhMin = 3;
-        const int nhMax = max(nhMin, n / 3);
-
-        // Restart from best every restartEvery iterations to prevent drift.
-        int restartEvery = max(10, 500 / nhSize);
-
-        cerr << "[LNS" << (adaptive ? "-adaptive" : "") << " phase " << phase << "] start"
-             << "  nhSize=" << nhSize << " candidates=" << candidates
-             << "  restartEvery=" << restartEvery
-             << "  budget=" << timeLimitSec << "s"
-             << "  initial k=" << kVal << " totalX=" << totalX << "\n";
-
-        long long iters = 0, improves = 0;
-        // Adaptive: track improvements in a sliding window of 50 iterations.
-        const int adaptWindow = 50;
-        long long windowImproves = 0;
-        double nextReport = 30.0;
-        double nextStatus = 0.0;
-
-        MovePlan plan, bestPlan;
-        plan.pairChanges.reserve(512);
-        plan.edgeCounts.reserve(512);
-        bestPlan.pairChanges.reserve(512);
-        bestPlan.edgeCounts.reserve(512);
-
-        writeStatus(initT, iters, improves, "running");
-
-        while (kVal > 0 && elapsed() < timeLimitSec) {
-            // Temperature decays geometrically over the full budget;
-            // controls Gaussian exploration radius inside selectPlace.
-            double tFrac = elapsed() / max(1.0, timeLimitSec);
-            if (tFrac > 1.0) tFrac = 1.0;
-            double T = initT * pow(max(tLim, 1e-9) / max(initT, 1e-9), tFrac);
-            if (T < tLim) T = tLim;
-
-            // Destroy: select a connected neighbourhood.
-            vector<int> nh = selectNeighbourhood(nhSize);
-
-            // Repair: for each node in the neighbourhood, find the best
-            // strictly-improving position among 'candidates' random draws.
-            for (int v : nh) {
-                // Bound a single iteration to the time budget. On huge graphs
-                // one node's `candidates` planMoves are costly, so the coarse
-                // per-iteration check at the while() head can overshoot badly;
-                // re-check here so LNS honours `-t` even mid-neighbourhood.
-                if (elapsed() >= timeLimitSec) break;
-
-                bool   foundBetter  = false;
-                double bestDeltaFit = 0.0;  // only commit when dFit < 0
-
-                for (int r = 0; r < candidates; r++) {
-                    Pt newPos = selectPlace(v, T, initT, /*localOnly=*/false);
-                    if (newPos == pos[v]) continue;
-                    {
-                        auto it = occupied.find(newPos);
-                        if (it != occupied.end() && it->second != v) continue;
-                    }
-                    if (wouldCauseVertexEdgeOverlapFast(v, newPos)) continue;
-
-                    planMove(v, newPos, plan);
-
-                    double dFit;
-                    if (phase == 1) {
-                        dFit = (double)plan.dCross;
-                    } else {
-                        int dK = plan.newLocalK - plan.oldLocalK;
-                        if (dK != 0)
-                            dFit = (double)dK;
-                        else
-                            dFit = (double)plan.dCross /
-                                   max(1.0, (double)max<ll>(1, totalX));
-                    }
-
-                    if (dFit < bestDeltaFit) {
-                        bestDeltaFit = dFit;
-                        bestPlan     = plan;
-                        foundBetter  = true;
-                    }
-                }
-
-                if (foundBetter) commitMove(bestPlan);
-            }
-
-            if (kVal < bestK || (kVal == bestK && totalX < bestX)) {
-                saveBest();
-                improves++;
-                windowImproves++;
-            }
-
-            iters++;
-
-            // Adaptive: resize neighbourhood every adaptWindow iterations.
-            if (adaptive && iters % adaptWindow == 0) {
-                double rate = (double)windowImproves / adaptWindow;
-                if (rate < 0.05) {
-                    // Stalled — expand neighbourhood to escape local optimum.
-                    nhSize = min(nhMax, (int)(nhSize * 1.5 + 1));
-                    restartEvery = max(10, 500 / nhSize);
-                    cerr << "  [LNS-adaptive] stalled (rate=" << rate
-                         << ") -> nhSize=" << nhSize << "\n";
-                } else if (rate > 0.25 && nhSize > nhMin) {
-                    // Improving well — shrink for finer-grained search.
-                    nhSize = max(nhMin, (int)(nhSize / 1.3));
-                    restartEvery = max(10, 500 / nhSize);
-                    cerr << "  [LNS-adaptive] improving (rate=" << rate
-                         << ") -> nhSize=" << nhSize << "\n";
-                }
-                windowImproves = 0;
-            }
-
-            // Periodic restart from best to bound quality degradation.
-            if (iters % restartEvery == 0) restoreBest();
-
-            double el = elapsed();
-            if (el >= nextStatus) {
-                writeStatus(T, iters, improves, "running");
-                nextStatus = el + statusInterval;
-            }
-            if (el >= nextReport) {
-                cerr << "  [LNS" << (adaptive ? "-adaptive" : "") << " " << phase
-                     << "] t=" << (int)el
-                     << "s  bestK=" << bestK << " bestX=" << bestX
-                     << "  curK=" << kVal << " curX=" << totalX
-                     << "  nhSize=" << nhSize
-                     << "  iters=" << iters << " improves=" << improves << "\n";
-                nextReport = el + 30.0;
-            }
-        }
-
-        writeStatus(0, iters, improves, "phase-done");
-        cerr << "[LNS" << (adaptive ? "-adaptive" : "") << " phase " << phase << "] end"
-             << "  iters=" << iters << " improves=" << improves
-             << "  bestK=" << bestK << " bestX=" << bestX << "\n";
-    }
-
-    // ---- ILS (Iterated Local Search) ------------------------------------
-
-    // Random perturbation kick used between inner SA rounds.
-    // Relocates 'size' nodes to uniformly-random valid canvas positions.
-    // The idea: SA converges to a local optimum; the kick disrupts the layout
-    // enough that the next SA round explores a different basin.
-    void kick(int size) {
-        size = max(1, min(size, n));
-
-        // Random permutation so we don't always kick the same nodes.
-        vector<int> order(n);
-        for (int i = 0; i < n; i++) order[i] = i;
-        shuffle(order.begin(), order.end(), rng);
-
-        MovePlan plan;
-        plan.pairChanges.reserve(256);
-        plan.edgeCounts.reserve(256);
-
-        int kicked = 0;
-        for (int v : order) {
-            if (kicked >= size) break;
-            for (int attempt = 0; attempt < 200; attempt++) {
-                ll nx = uniform_int_distribution<ll>(ox, ox + W)(rng);
-                ll ny = uniform_int_distribution<ll>(oy, oy + H)(rng);
-                Pt newPos{nx, ny};
-                if (newPos == pos[v]) continue;
-                {
-                    auto it = occupied.find(newPos);
-                    if (it != occupied.end() && it->second != v) continue;
-                }
-                if (wouldCauseVertexEdgeOverlapFast(v, newPos)) continue;
-                planMove(v, newPos, plan);
-                commitMove(plan);
-                kicked++;
-                break;
-            }
-        }
-        cerr << "[ILS] kick: moved " << kicked << "/" << size << " nodes\n";
-    }
-
-    // ILS main loop.
-    // Alternates SA annealing runs with random kicks to escape local optima.
-    // Each inner SA runs for innerBudget seconds (total / targetRounds).
-    // perturbSize: nodes kicked per perturbation (0 = auto: n/10, min 3).
-    void runILS(int phase,
-                double initT, double decT, double decTW, double tLim,
-                double totalTimeSec, int perturbSize) {
-        auto t0 = steady_clock::now();
-        auto totalElapsed = [&]() {
-            return duration_cast<duration<double>>(
-                steady_clock::now() - t0).count();
-        };
-
-        if (perturbSize <= 0) perturbSize = max(3, n / 10);
-
-        // Target ~5 inner SA rounds; each at least 10 s.
-        int targetRounds   = max(2, min(5, (int)(totalTimeSec / 10.0)));
-        double innerBudget = totalTimeSec / targetRounds;
-
-        cerr << "[ILS phase " << phase << "] start"
-             << "  perturbSize=" << perturbSize
-             << "  innerBudget=" << (int)innerBudget << "s"
-             << "  totalBudget=" << (int)totalTimeSec << "s"
-             << "  initial k=" << kVal << " totalX=" << totalX << "\n";
-
-        int round = 0;
-        while (kVal > 0 && totalElapsed() < totalTimeSec) {
-            double remaining = totalTimeSec - totalElapsed();
-            if (remaining <= 1.0) break;
-            double budget = min(innerBudget, remaining);
-
-            cerr << "[ILS phase " << phase << "] round " << round + 1
-                 << "/" << targetRounds
-                 << "  budget=" << (int)budget << "s"
-                 << "  curBestK=" << bestK << "\n";
-
-            runSA(phase, initT, decT, decTW, tLim, budget);
-            round++;
-
-            if (kVal <= 0 || totalElapsed() >= totalTimeSec) break;
-
-            // Restore global best, then apply random kick so the next SA
-            // round starts from a perturbed version of the best solution.
-            restoreBest();
-            kick(perturbSize);
-        }
-
-        restoreBest();
-        cerr << "[ILS phase " << phase << "] end  rounds=" << round
              << "  bestK=" << bestK << " bestX=" << bestX << "\n";
     }
 };
@@ -1573,24 +1324,18 @@ static void printUsage(const char* prog) {
         "Usage:\n"
         "  " << prog << " -i input.json -o output.json"
                        "  [-t minutes] [-p1 minutes] [-s seed]\n"
-        "  " << prog << " input.json output.json\n"
-        "  " << prog << " --verify input.json\n"
-        "\nOptions (shared with sakgd):\n"
+        "  " << prog << " input.json output.json"
+                       "         (positional form, defaults to 60 / 10 minutes)\n"
+        "  " << prog << " --verify input.json"
+                       "             (only report k and total crossings)\n"
+        "\nOptions:\n"
         "  -t  total time budget in minutes         (default: 60)\n"
         "  -p1 time budget of phase 1 in minutes    (default: 10)\n"
         "  -s  RNG seed                             (default: time-based)\n"
         "  --status-file PATH    write live status JSON to PATH\n"
         "  --status-id   STRING  identifier shown in the dashboard\n"
         "  --status-interval SEC seconds between status dumps (default: 1.0)\n"
-        "  --verify              parse the input, report metrics and exit\n"
-        "\nApproach-1 options:\n"
-        "  --mode sa             Run simulated annealing (default)\n"
-        "  --mode lns            Run Large Neighbourhood Search\n"
-        "  --mode lns-adaptive   Run LNS with dynamic neighbourhood sizing\n"
-        "  --mode ils            Run Iterated Local Search (SA + random kicks)\n"
-        "  --nh-size K           LNS neighbourhood size   (default: n/10, min 3)\n"
-        "  --nh-cands R          LNS candidates per node  (default: 50)\n"
-        "  --ils-perturb P       ILS kick size            (default: n/10, min 3)\n";
+        "  --verify              parse the input, report metrics and exit\n";
 }
 
 int main(int argc, char** argv) {
@@ -1601,11 +1346,6 @@ int main(int argc, char** argv) {
     bool verifyOnly  = false;
     string statusFile, statusId = "run";
     double statusInterval = 1.0;
-    string mode = "sa";
-    int lnsNhSize  = 0;
-    int lnsCands   = 0;
-    int ilsPerturb = 0;
-    int kbandArg   = 2;     // phase-2 k-critical selection band
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -1622,11 +1362,6 @@ int main(int argc, char** argv) {
         else if (a == "--status-id")         statusId   = need("--status-id");
         else if (a == "--status-interval")   statusInterval = atof(need("--status-interval"));
         else if (a == "--verify")            verifyOnly = true;
-        else if (a == "--mode")              mode       = need("--mode");
-        else if (a == "--nh-size")           lnsNhSize  = atoi(need("--nh-size"));
-        else if (a == "--nh-cands")          lnsCands   = atoi(need("--nh-cands"));
-        else if (a == "--ils-perturb")       ilsPerturb = atoi(need("--ils-perturb"));
-        else if (a == "--kband")             kbandArg   = atoi(need("--kband"));
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         else if (inputFile.empty())  inputFile  = a;
         else if (outputFile.empty()) outputFile = a;
@@ -1634,10 +1369,6 @@ int main(int argc, char** argv) {
     }
     if (inputFile.empty()) { printUsage(argv[0]); return 1; }
     if (outputFile.empty() && !verifyOnly) outputFile = inputFile + ".out.json";
-    if (mode != "sa" && mode != "lns" && mode != "lns-adaptive" && mode != "ils") {
-        cerr << "Unknown --mode '" << mode << "' (expected 'sa', 'lns', 'lns-adaptive', or 'ils')\n";
-        return 1;
-    }
 
     cerr << "Reading: " << inputFile << "\n";
     GraphData g = readGraph(inputFile);
@@ -1649,7 +1380,6 @@ int main(int argc, char** argv) {
     solver.statusFile     = statusFile;
     solver.statusId       = statusId;
     solver.statusInterval = max(0.05, statusInterval);
-    solver.kBand          = kbandArg;
     solver.runStartedAt   = steady_clock::now();
     solver.setup(g);
     int veInit = solver.findVertexEdgeOverlapFast();
@@ -1658,6 +1388,7 @@ int main(int argc, char** argv) {
          << "  vertexEdgeOverlap=" << (veInit < 0 ? "no" : "YES")
          << "\n";
 
+    // Initial dump so the dashboard sees the run before SA starts.
     solver.curPhase = 0; solver.curInitT = 0; solver.curTempLim = 0; solver.curBudget = 0;
     solver.phaseStartedAt = steady_clock::now();
     solver.writeStatus(0, 0, 0, "starting");
@@ -1671,29 +1402,18 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    double remaining = max(0.0, (totalMin - phase1Min) * 60.0);
+    // Paper parameters (Table 1):
+    //   min cross : initT=50  decT=0.999  decTW=0.99  tLim=0.01
+    //   min k     : initT=1   decT=0.9999 decTW=0.99  tLim=0.01
+    solver.runSA(/*phase*/1, 50.0,  0.999, 0.99, 0.01, phase1Min * 60.0);
 
-    if (mode == "lns" || mode == "lns-adaptive") {
-        bool adaptive = (mode == "lns-adaptive");
-        cerr << "Mode: " << (adaptive ? "LNS-adaptive" : "LNS") << " (Large Neighbourhood Search)"
-             << "  nhSize=" << (lnsNhSize > 0 ? to_string(lnsNhSize) : "auto")
-             << " cands=" << (lnsCands > 0 ? to_string(lnsCands) : "auto") << "\n";
-        solver.runLNS(/*phase*/1, 50.0, 0.01, phase1Min * 60.0, lnsNhSize, lnsCands, adaptive);
-        solver.runLNS(/*phase*/2,  1.0, 0.01, remaining,        lnsNhSize, lnsCands, adaptive);
-    } else if (mode == "ils") {
-        cerr << "Mode: ILS (Iterated Local Search)"
-             << "  perturbSize=" << (ilsPerturb > 0 ? to_string(ilsPerturb) : "auto") << "\n";
-        solver.runILS(/*phase*/1, 50.0,  0.999, 0.99, 0.01, phase1Min * 60.0, ilsPerturb);
-        solver.runILS(/*phase*/2,  1.0, 0.9999, 0.99, 0.01, remaining,        ilsPerturb);
-    } else {
-        cerr << "Mode: SA (Simulated Annealing)\n";
-        solver.runSA(/*phase*/1, 50.0,  0.999, 0.99, 0.01, phase1Min * 60.0);
-        solver.runSA(/*phase*/2,  1.0, 0.9999, 0.99, 0.01, remaining);
-    }
+    double remaining = max(0.0, (totalMin - phase1Min) * 60.0);
+    solver.runSA(/*phase*/2,  1.0, 0.9999, 0.99, 0.01, remaining);
 
     cerr << "Final best: k=" << solver.bestK
          << " totalX=" << solver.bestX << "\n";
 
+    // Sanity check: the saved best layout must be a valid GD-contest drawing.
     {
         solver.restoreBest();
         int veFinal = solver.findVertexEdgeOverlapFast();

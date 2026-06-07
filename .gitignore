@@ -1,6 +1,9 @@
 .DS_Store
 sakgd
 approach1
+sakgd_baseline
+approach1_baseline
+*.dSYM/
 runs/
 data/*.out.json
 data/test*.json

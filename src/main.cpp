@@ -601,6 +601,14 @@ public:
     double         totalNodeW = 0.0;
     int            cumStaleCnt = 0;
 
+    // k-critical vertex selection (phase 2). When selKBand >= 0, selectNode
+    // biases hard toward vertices incident to "bottleneck" edges — those whose
+    // crossing count is within `selKBand` of the current kVal — instead of the
+    // phase-1 total-crossing weighting. kBand is the tunable band width.
+    int            kBand    = 2;     // default band; override with --kband
+    int            selKBand = -1;    // active band: <0 => phase-1 weighting
+    int            lastCumK = -1;    // kVal at last rebuild (critical-mode resync)
+
     SAkGD() {
         rng.seed((uint64_t)chrono::steady_clock::now().time_since_epoch().count() ^
                  (uint64_t)(uintptr_t)this);
@@ -999,18 +1007,43 @@ public:
     void rebuildCum() {
         cum.assign(n, 0.0);
         double t = 0.0;
-        for (int i = 0; i < n; i++) {
-            double w = 1.0;
-            for (int e : nodeEdges[i]) w += (double)xc[e];
-            t += w;
-            cum[i] = t;
+        if (selKBand < 0) {
+            // Phase-1 weighting: weight(v) = 1 + sum of crossings on incident edges.
+            for (int i = 0; i < n; i++) {
+                double w = 1.0;
+                for (int e : nodeEdges[i]) w += (double)xc[e];
+                t += w;
+                cum[i] = t;
+            }
+        } else {
+            // k-critical weighting: only edges within `selKBand` of kVal count,
+            // with quadratic emphasis on proximity to kVal. A small flat base
+            // (0.1) keeps a little probability on non-critical vertices so the
+            // search can still relocate neighbours to make room.
+            int thr = kVal - selKBand;
+            if (thr < 1) thr = 1;
+            for (int i = 0; i < n; i++) {
+                double w = 0.1;
+                for (int e : nodeEdges[i]) {
+                    if (xc[e] >= thr) {
+                        double d = (double)(xc[e] - thr + 1);
+                        w += d * d;
+                    }
+                }
+                t += w;
+                cum[i] = t;
+            }
         }
         totalNodeW  = t;
+        lastCumK    = kVal;
         cumStaleCnt = 0;
     }
 
     int selectNode() {
-        if (cumStaleCnt > max(64, n / 4)) rebuildCum();
+        // In k-critical mode the band depends on kVal, so resync whenever kVal
+        // moves (rare in phase 2) in addition to the periodic staleness refresh.
+        if (cumStaleCnt > max(64, n / 4) ||
+            (selKBand >= 0 && kVal != lastCumK)) rebuildCum();
         if (totalNodeW <= 0) {
             return uniform_int_distribution<int>(0, n - 1)(rng);
         }
@@ -1204,6 +1237,11 @@ public:
         curTempLim = tLim;
         curBudget  = timeLimitSec;
 
+        // Phase 2 minimises the bottleneck k; switch to k-critical vertex
+        // selection. Phase 1 minimises total crossings; keep the broad weighting.
+        selKBand = (phase == 2 && kBand >= 0) ? kBand : -1;
+        rebuildCum();
+
         auto elapsed = [&] {
             return duration_cast<duration<double>>(
                 steady_clock::now() - phaseStartedAt).count();
@@ -1324,6 +1362,7 @@ static void printUsage(const char* prog) {
         "  -t  total time budget in minutes         (default: 60)\n"
         "  -p1 time budget of phase 1 in minutes    (default: 10)\n"
         "  -s  RNG seed                             (default: time-based)\n"
+        "  --kband N  phase-2 k-critical selection band, -1 to disable (default: 2)\n"
         "  --status-file PATH    write live status JSON to PATH\n"
         "  --status-id   STRING  identifier shown in the dashboard\n"
         "  --status-interval SEC seconds between status dumps (default: 1.0)\n"
@@ -1338,6 +1377,7 @@ int main(int argc, char** argv) {
     bool verifyOnly  = false;
     string statusFile, statusId = "run";
     double statusInterval = 1.0;
+    int    kbandArg  = 2;     // phase-2 k-critical selection band
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -1350,6 +1390,7 @@ int main(int argc, char** argv) {
         else if (a == "-t")                  totalMin   = atof(need("-t"));
         else if (a == "-p1")                 phase1Min  = atof(need("-p1"));
         else if (a == "-s")                  seed       = atoll(need("-s"));
+        else if (a == "--kband")             kbandArg   = atoi(need("--kband"));
         else if (a == "--status-file")       statusFile = need("--status-file");
         else if (a == "--status-id")         statusId   = need("--status-id");
         else if (a == "--status-interval")   statusInterval = atof(need("--status-interval"));
@@ -1372,6 +1413,7 @@ int main(int argc, char** argv) {
     solver.statusFile     = statusFile;
     solver.statusId       = statusId;
     solver.statusInterval = max(0.05, statusInterval);
+    solver.kBand          = kbandArg;
     solver.runStartedAt   = steady_clock::now();
     solver.setup(g);
     int veInit = solver.findVertexEdgeOverlapFast();

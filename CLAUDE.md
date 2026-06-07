@@ -6,11 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 make              # builds ./sakgd (SA only) and ./approach1 (SA + LNS + ILS)
+make baseline     # builds ./sakgd_baseline + ./approach1_baseline (control build)
 make debug        # -O0 with ASAN/UBSAN
 make clean
 ```
 
 Requires only C++17, no external libraries. Source files: `src/main.cpp` → `./sakgd`, `src/approach1_lns.cpp` → `./approach1`.
+
+**Phase-2 vertex selection.** The default solvers use *k-critical vertex selection*
+in Phase 2: `selectNode()` biases hard toward vertices incident to bottleneck
+edges (crossing count within `--kband` of the current k, default 2; quadratic
+emphasis). Phase 1 is unchanged (total-crossing bias). Pass `--kband -1` to fall
+back to the original behaviour. `src/main_baseline.cpp` / `src/approach1_lns_baseline.cpp`
+are a verbatim pre-k-critical snapshot built by `make baseline` — the control for
+A/B comparison; do not add features there.
 
 ## Running the solvers
 

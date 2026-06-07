@@ -1,3 +1,9 @@
+// ===========================================================================
+// BASELINE BUILD — pre-"k-critical vertex selection" snapshot.
+// Original Phase-2 selection (total-crossing bias) for LNS/ILS/staged. Kept
+// verbatim as the control for A/B vs the new default in src/approach1_lns.cpp.
+// Build: `make baseline` -> ./approach1_baseline. Do NOT add features here.
+// ===========================================================================
 // approach1_lns.cpp — Large Neighbourhood Search for k-planarity minimization.
 //
 // Approach 1: LNS (Large Neighbourhood Search)
@@ -596,13 +602,6 @@ public:
     double         totalNodeW = 0.0;
     int            cumStaleCnt = 0;
 
-    // k-critical vertex selection (phase 2): bias selectNode (and thus the LNS
-    // BFS seed) toward vertices incident to bottleneck edges within `kBand` of
-    // kVal. selKBand < 0 => phase-1 total-crossing weighting.
-    int            kBand    = 2;
-    int            selKBand = -1;
-    int            lastCumK = -1;
-
     SAkGD() {
         rng.seed((uint64_t)chrono::steady_clock::now().time_since_epoch().count() ^
                  (uint64_t)(uintptr_t)this);
@@ -961,43 +960,18 @@ public:
     void rebuildCum() {
         cum.assign(n, 0.0);
         double t = 0.0;
-        if (selKBand < 0) {
-            // Phase-1 weighting: weight(v) = 1 + sum of crossings on incident edges.
-            for (int i = 0; i < n; i++) {
-                double w = 1.0;
-                for (int e : nodeEdges[i]) w += (double)xc[e];
-                t += w;
-                cum[i] = t;
-            }
-        } else {
-            // k-critical weighting: only edges within `selKBand` of kVal count,
-            // with quadratic emphasis on proximity to kVal. A small flat base
-            // (0.1) keeps a little probability on non-critical vertices so the
-            // search can still relocate neighbours to make room.
-            int thr = kVal - selKBand;
-            if (thr < 1) thr = 1;
-            for (int i = 0; i < n; i++) {
-                double w = 0.1;
-                for (int e : nodeEdges[i]) {
-                    if (xc[e] >= thr) {
-                        double d = (double)(xc[e] - thr + 1);
-                        w += d * d;
-                    }
-                }
-                t += w;
-                cum[i] = t;
-            }
+        for (int i = 0; i < n; i++) {
+            double w = 1.0;
+            for (int e : nodeEdges[i]) w += (double)xc[e];
+            t += w;
+            cum[i] = t;
         }
         totalNodeW  = t;
-        lastCumK    = kVal;
         cumStaleCnt = 0;
     }
 
     int selectNode() {
-        // In k-critical mode the band depends on kVal, so resync whenever kVal
-        // moves (rare in phase 2) in addition to the periodic staleness refresh.
-        if (cumStaleCnt > max(64, n / 4) ||
-            (selKBand >= 0 && kVal != lastCumK)) rebuildCum();
+        if (cumStaleCnt > max(64, n / 4)) rebuildCum();
         if (totalNodeW <= 0)
             return uniform_int_distribution<int>(0, n - 1)(rng);
         double r = uniform_real_distribution<double>(0.0, totalNodeW)(rng);
@@ -1159,10 +1133,6 @@ public:
         curTempLim = tLim;
         curBudget  = timeLimitSec;
 
-        // Phase 2 minimises the bottleneck k -> k-critical vertex selection.
-        selKBand = (phase == 2 && kBand >= 0) ? kBand : -1;
-        rebuildCum();
-
         auto elapsed = [&] {
             return duration_cast<duration<double>>(
                 steady_clock::now() - phaseStartedAt).count();
@@ -1318,11 +1288,6 @@ public:
         curInitT   = initT;
         curTempLim = tLim;
         curBudget  = timeLimitSec;
-
-        // Phase 2 minimises the bottleneck k -> k-critical seed selection for
-        // the destroy neighbourhood (selectNeighbourhood starts from selectNode).
-        selKBand = (phase == 2 && kBand >= 0) ? kBand : -1;
-        rebuildCum();
 
         auto elapsed = [&] {
             return duration_cast<duration<double>>(
@@ -1605,7 +1570,6 @@ int main(int argc, char** argv) {
     int lnsNhSize  = 0;
     int lnsCands   = 0;
     int ilsPerturb = 0;
-    int kbandArg   = 2;     // phase-2 k-critical selection band
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -1626,7 +1590,6 @@ int main(int argc, char** argv) {
         else if (a == "--nh-size")           lnsNhSize  = atoi(need("--nh-size"));
         else if (a == "--nh-cands")          lnsCands   = atoi(need("--nh-cands"));
         else if (a == "--ils-perturb")       ilsPerturb = atoi(need("--ils-perturb"));
-        else if (a == "--kband")             kbandArg   = atoi(need("--kband"));
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         else if (inputFile.empty())  inputFile  = a;
         else if (outputFile.empty()) outputFile = a;
@@ -1649,7 +1612,6 @@ int main(int argc, char** argv) {
     solver.statusFile     = statusFile;
     solver.statusId       = statusId;
     solver.statusInterval = max(0.05, statusInterval);
-    solver.kBand          = kbandArg;
     solver.runStartedAt   = steady_clock::now();
     solver.setup(g);
     int veInit = solver.findVertexEdgeOverlapFast();
