@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -309,18 +310,183 @@ def update_best(out_root, bests, graph, method, k, totalX, layout_path, run_id,
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Live log parsing (for per-graph in-progress status in report.html)
+# ---------------------------------------------------------------------------
+_RL_INITIAL  = re.compile(r"Initial:\s*k=(\d+)\s+totalX=(\d+)")
+_RL_PH_PROG  = re.compile(r"\[phase (\d+)\]\s+t=(\d+)s\s+bestK=(\d+)\s+bestX=(\d+).*?sT=(\S+)")
+_RL_ILS_RND  = re.compile(r"\[ILS phase (\d+)\] round (\d+)/(\d+).*?curBestK=(\d+)")
+_RL_ILS_END  = re.compile(r"\[ILS phase (\d+)\] end.*?bestK=(\d+)\s+bestX=(\d+)")
+_RL_LNS_PROG = re.compile(r"\[LNS[^\]]*\]\s+t=(\d+)s\s+bestK=(\d+)\s+bestX=(\d+)")
+_RL_LNS_END  = re.compile(r"\[LNS[^\]]*phase \d+\] end.*?bestK=(\d+)\s+bestX=(\d+)")
+_RL_FINAL    = re.compile(r"Final best:\s*k=(\d+)\s+totalX=(\d+)")
+
+
+def _parse_live_log(path: Path) -> dict:
+    s = dict(status="waiting", initial_k=None, best_k=None, best_x=None,
+             t_elapsed=None, temp=None, ils_round=None, ils_total=None, lns_t=None)
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return s
+    if not text.strip():
+        return s
+    s["status"] = "ph1"
+    m = _RL_INITIAL.search(text)
+    if m:
+        s["initial_k"] = int(m.group(1))
+        s["best_k"]    = int(m.group(1))
+    for m in _RL_PH_PROG.finditer(text):
+        ph = int(m.group(1))
+        s["t_elapsed"] = int(m.group(2))
+        s["best_k"]    = int(m.group(3))
+        s["best_x"]    = int(m.group(4))
+        s["temp"]      = float(m.group(5))
+        s["status"]    = f"ph{ph}"
+    for m in _RL_ILS_RND.finditer(text):
+        ph = int(m.group(1))
+        s["ils_round"] = int(m.group(2))
+        s["ils_total"] = int(m.group(3))
+        s["best_k"]    = int(m.group(4))
+        s["status"]    = f"ils_ph{ph}"
+    for m in _RL_ILS_END.finditer(text):
+        ph = int(m.group(1))
+        s["best_k"] = int(m.group(2))
+        s["best_x"] = int(m.group(3))
+        s["status"] = f"ils_ph{ph}_done"
+    for m in _RL_LNS_PROG.finditer(text):
+        s["lns_t"]  = int(m.group(1))
+        s["best_k"] = int(m.group(2))
+        s["best_x"] = int(m.group(3))
+        s["status"] = "lns"
+    m = _RL_LNS_END.search(text)
+    if m:
+        s["best_k"] = int(m.group(1))
+        s["best_x"] = int(m.group(2))
+        s["status"] = "lns_done"
+    m = _RL_FINAL.search(text)
+    if m:
+        s["best_k"] = int(m.group(1))
+        s["best_x"] = int(m.group(2))
+        s["status"] = "done"
+    return s
+
+
+def scan_live_status(run_dir: Path, methods: list) -> dict:
+    """Return {(gname, method): state_dict} by reading all log files in run_dir."""
+    result = {}
+    if not run_dir or not run_dir.exists():
+        return result
+    for gdir in sorted(run_dir.iterdir(),
+                       key=lambda p: int(re.search(r"\d+", p.name).group() or 0)):
+        if not gdir.is_dir():
+            continue
+        gname = gdir.name
+        for method in methods:
+            if method in ("staged", "staged-adaptive"):
+                log = gdir / "staged_sa_w0.log"
+                if not log.exists():
+                    log = gdir / "staged_lns_w0.log"
+            else:
+                log = gdir / f"{method}_w0.log"
+            result[(gname, method)] = _parse_live_log(log)
+    return result
+
+
+def _live_status_html(live_status: dict, methods: list) -> str:
+    """Build the Live Status table HTML from parsed log states."""
+    graphs = sorted(
+        {g for (g, _) in live_status},
+        key=lambda s: int(re.search(r"\d+", s).group() or 0)
+    )
+    if not graphs:
+        return ""
+    # Use only methods that actually appear in live_status keys.
+    live_methods_set = {m for (_, m) in live_status}
+    methods = [m for m in methods if m in live_methods_set]
+    if not methods:
+        return ""
+
+    def badge(s: dict) -> str:
+        st = s.get("status", "waiting")
+        bk = s.get("best_k")
+        bx = s.get("best_x")
+        t  = s.get("t_elapsed")
+        T  = s.get("temp")
+        if st == "waiting":
+            return "<span class='ls-wait'>·· waiting ··</span>"
+        if st == "ph1":
+            k  = f"k={bk}" if bk is not None else "k=?"
+            ts = f" t={t}s"  if t  is not None else ""
+            return f"<span class='ls-ph1'>▶ ph1 {k}{ts}</span>"
+        if st == "ph2":
+            k  = f"k={bk}" if bk is not None else "k=?"
+            ts = f" t={t}s"  if t  is not None else ""
+            Ts = f" T={T:.3f}" if T is not None else ""
+            return f"<span class='ls-ph2'>▶ ph2 {k}{ts}{Ts}</span>"
+        if st.startswith("ils_ph"):
+            ph  = st.replace("ils_ph", "").replace("_done", "")
+            r   = s.get("ils_round")
+            tot = s.get("ils_total")
+            k   = f"k={bk}" if bk is not None else "k=?"
+            rnd = f" r={r}/{tot}" if r else ""
+            return f"<span class='ls-ils'>▶ ILS·ph{ph}{rnd} {k}</span>"
+        if st in ("lns", "lns_done"):
+            k  = f"k={bk}" if bk is not None else "k=?"
+            lt = s.get("lns_t")
+            ts = f" t={lt}s" if lt else ""
+            return f"<span class='ls-lns'>▶ LNS {k}{ts}</span>"
+        if st == "done":
+            k = f"k={bk}" if bk is not None else "k=?"
+            x = f" X={bx}"  if bx is not None else ""
+            return f"<span class='ls-done'>✓ {k}{x}</span>"
+        return "<span class='ls-wait'>··</span>"
+
+    done_cnt   = sum(1 for s in live_status.values() if s.get("status") == "done")
+    active_cnt = sum(1 for s in live_status.values()
+                     if s.get("status") not in ("waiting", "done"))
+    n_total    = len(live_status)
+
+    mh   = "".join(f"<th>{m.upper()}</th>" for m in methods)
+    rows = []
+    for g in graphs:
+        cells = f"<td><strong>{g}</strong></td>"
+        for m in methods:
+            s = live_status.get((g, m), {"status": "waiting"})
+            cells += f"<td>{badge(s)}</td>"
+        rows.append(f"<tr>{cells}</tr>")
+
+    return (
+        "<h2>Live Status <small style='font-weight:400;text-transform:none;"
+        f"font-size:.75rem;color:#666'>— {done_cnt}/{n_total} done"
+        f", {active_cnt} running — auto-refresh 5s</small></h2>"
+        "<div class='card'>"
+        "<table>"
+        f"<thead><tr><th>Graph</th>{mh}</tr></thead>"
+        "<tbody>" + "\n".join(rows) + "</tbody>"
+        "</table></div>"
+    )
+
+
 # HTML report
 # ---------------------------------------------------------------------------
 def _js(values):
     return "[" + ", ".join("null" if v is None else str(v) for v in values) + "]"
 
 
-def generate_report(out_root, history, bests, methods_order=None):
+def generate_report(out_root, history, bests, methods_order=None, live_status=None):
     best_results = {}
     for key, val in bests.items():
         if "__" in key:
             g, m = key.split("__", 1)
             best_results[(g, m)] = val
+
+    # combo_lookup lets us fill in config fields missing from older bests.json entries
+    combo_lookup = {}
+    for _run in history.get("runs", []):
+        _rid = _run.get("id", "")
+        for _c in _run.get("combos", []):
+            combo_lookup[(_c["graph"], _c["method"], _rid)] = _c
 
     all_graphs, all_methods = set(), set()
     baseline_by_graph, graph_meta = {}, {}
@@ -396,27 +562,31 @@ def generate_report(out_root, history, bests, methods_order=None):
         bk_best = graph_best_k.get(g)
         cells = f"<td>{g}</td><td>{r['nodes']}</td><td>{r['edges']}</td><td>{bk}</td>"
         for m in methods:
-            br = best_results.get((g, m), {})
-            mk = br.get("k")
-            tx = br.get("totalX", "—")
+            br  = best_results.get((g, m), {})
+            mk  = br.get("k")
+            tx  = br.get("totalX", "—")
             if mk is None:
                 cells += "<td>—</td><td>—</td>"
             else:
-                kstr = f"<strong>{mk}</strong>" if mk == bk_best else str(mk)
-                bud = br.get("budget_min")
-                nw  = br.get("n_workers")
-                wc  = br.get("wall_clock_sec")
-                tip_bits = []
-                if bud is not None:
-                    tip_bits.append(f"budget {bud} min")
-                if nw is not None:
-                    tip_bits.append(f"{nw} workers")
-                if wc is not None:
-                    tip_bits.append(f"wall {wc}s")
-                if br.get("run_id"):
-                    tip_bits.append(f"run {br['run_id']}")
-                tip = (" title='" + " | ".join(tip_bits) + "'") if tip_bits else ""
-                cells += f"<td{tip}>{kstr}</td><td>{tx or '—'}</td>"
+                is_best = (mk == bk_best)
+                kstr    = f"<strong>{mk}</strong>" if is_best else str(mk)
+                td_cls  = " class='best-cell'" if is_best else ""
+                run_id  = br.get("run_id", "")
+                cl      = combo_lookup.get((g, m, run_id), {})
+                bud     = br.get("budget_min")    or cl.get("budget_min")
+                nw      = br.get("n_workers")     or cl.get("n_workers")
+                wc      = br.get("wall_clock_sec") or cl.get("wall_clock_sec")
+                seeds   = cl.get("seeds", [])
+                cfg = []
+                if bud is not None: cfg.append(f"{bud}m budget")
+                if nw  is not None: cfg.append(f"{nw}w")
+                if seeds:           cfg.append(f"seed {seeds[0]}")
+                if wc  is not None: cfg.append(f"⏱ {wc}s")
+                if run_id:          cfg.append(f"run {run_id}")
+                cfg_html = (
+                    f"<br><small class='cfg'>{' &nbsp;·&nbsp; '.join(cfg)}</small>"
+                    if cfg else "")
+                cells += f"<td{td_cls}>{kstr}{cfg_html}</td><td>{tx or '—'}</td>"
         tbody.append(f"<tr>{cells}</tr>")
 
     # Per-method runtime & config summary — aggregated across all runs.
@@ -512,10 +682,17 @@ def generate_report(out_root, history, bests, methods_order=None):
                  + "\n".join(inner_rows) + "</tbody></table>")
         n_combos  = len(run.get("combos", []))
         n_workers = run.get("workers", 1)
+        mm        = run.get("minutes_map", {})
+        mm_parts  = ([f"S={mm['small']}m"]  if "small"  in mm else []) + \
+                    ([f"M={mm['medium']}m"] if "medium" in mm else []) + \
+                    ([f"L={mm['large']}m"]  if "large"  in mm else [])
+        mm_s      = f" &nbsp;·&nbsp; budget [{', '.join(mm_parts)}]" if mm_parts else ""
+        rc_seeds  = run["combos"][0].get("seeds", []) if run.get("combos") else []
+        seed_s    = f" &nbsp;·&nbsp; seed {rc_seeds[0]}" if rc_seeds else ""
         history_html_parts.append(f"""<details>
           <summary>Run {run.get('id','?')} &nbsp;|&nbsp; {run.get('timestamp','?')}
             &nbsp;|&nbsp; workers={n_workers} &nbsp;|&nbsp;
-            methods=[{', '.join(run.get('methods',[]))}]
+            methods=[{', '.join(run.get('methods',[]))}]{mm_s}{seed_s}
             &nbsp;|&nbsp; {n_combos} combos</summary>
           {inner}
         </details>""")
@@ -635,65 +812,123 @@ def generate_report(out_root, history, bests, methods_order=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     n_runs = len(history.get("runs", []))
 
+    refresh_sec = 5 if live_status is not None else 30
+    live_methods = methods if live_status is not None else []
+    live_html = _live_status_html(live_status, live_methods) if live_status else ""
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="30">
+<meta http-equiv="refresh" content="{refresh_sec}">
 <title>GD-2025 k-planarity Results</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {{
-    --bg:#f0f0f0; --card:#ffffff; --border:#c4c4c4;
-    --text:#111111; --muted:#666666; --th-bg:#e4e4e4;
-    --row-alt:#f7f7f7; --row-hover:#eef2ff;
-    --best:#1a6e2e; --accent:#4361ee;
+    --bg:#f1f3f6; --card:#ffffff; --border:#e2e6ec;
+    --text:#0f172a; --muted:#64748b; --th-bg:#f8fafc;
+    --row-alt:#fafbfc; --row-hover:#eef2ff;
+    --best:#15803d; --accent:#4f46e5;
   }}
   * {{ box-sizing:border-box; margin:0; padding:0; }}
-  body {{ background:var(--bg); color:var(--text);
-          font-family:'Segoe UI',system-ui,sans-serif;
-          padding:32px; max-width:1400px; margin:0 auto; }}
-  h1 {{ font-size:1.6rem; font-weight:700; padding-bottom:10px;
-        border-bottom:3px solid var(--accent); margin-bottom:6px; }}
-  .sub {{ color:var(--muted); font-size:.85rem; margin-bottom:24px; margin-top:4px; }}
-  h2 {{ font-size:.76rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
-        color:var(--muted); border-bottom:1px solid var(--border);
-        padding-bottom:4px; margin:24px 0 10px; }}
-  .card {{ background:var(--card); border:1px solid var(--border);
-           border-radius:6px; padding:20px; margin-bottom:16px; }}
+  body {{
+    background:var(--bg); color:var(--text);
+    font-family:'Inter',system-ui,-apple-system,sans-serif;
+    padding:28px 36px; max-width:1380px; margin:0 auto; line-height:1.5;
+  }}
+
+  /* ── page header ── */
+  .page-header {{ margin-bottom:20px; padding-bottom:14px;
+                  border-bottom:2px solid var(--border); }}
+  .page-header h1 {{ font-size:1.55rem; font-weight:800; color:var(--text);
+                     letter-spacing:-.025em; display:flex; align-items:center; gap:10px; }}
+  .page-header h1 .badge {{
+    display:inline-block; background:var(--accent); color:#fff;
+    font-size:.6rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+    padding:3px 8px; border-radius:4px; vertical-align:middle; margin-top:-2px;
+  }}
+  .sub {{ color:var(--muted); font-size:.8rem; margin-top:5px; display:flex;
+          gap:12px; flex-wrap:wrap; align-items:center; }}
+  .sub-dot {{ color:var(--border); }}
+
+  /* ── section headings ── */
+  h2 {{
+    font-size:.67rem; font-weight:800; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--muted); padding-bottom:7px; margin:36px 0 14px;
+    border-bottom:2px solid var(--border); display:flex; align-items:center; gap:8px;
+  }}
+  h2::before {{ content:''; display:inline-block; width:3px; height:.9em;
+                background:var(--accent); border-radius:2px; flex-shrink:0; }}
+
+  /* ── cards ── */
+  .card {{
+    background:var(--card); border:1px solid var(--border);
+    border-radius:10px; padding:20px; margin-bottom:16px;
+    box-shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);
+  }}
+
+  /* ── charts ── */
   .charts {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
   @media(max-width:900px){{ .charts{{ grid-template-columns:1fr; }} }}
   canvas {{ max-height:300px; }}
+
+  /* ── tables ── */
   table {{ width:100%; border-collapse:collapse; font-size:.82rem; }}
-  th,td {{ padding:6px 10px; border:1px solid var(--border); text-align:right; }}
-  th {{ background:var(--th-bg); color:#333; text-align:center; font-weight:700;
-        font-size:.74rem; letter-spacing:.05em; text-transform:uppercase; }}
+  th,td {{ padding:9px 14px; text-align:right; border-bottom:1px solid var(--border); }}
+  th {{
+    background:var(--th-bg); color:var(--muted); text-align:center;
+    font-size:.65rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+    border-bottom:2px solid var(--border); white-space:nowrap;
+  }}
   td:first-child,th:first-child {{ text-align:left; }}
-  tr:nth-child(even) {{ background:var(--row-alt); }}
-  tr:hover {{ background:var(--row-hover); }}
+  tbody tr:nth-child(even) td {{ background:var(--row-alt); }}
+  tbody tr:hover td {{ background:var(--row-hover); }}
   strong {{ color:var(--best); font-weight:700; }}
-  details {{ background:var(--card); border:1px solid var(--border);
-             border-radius:6px; padding:10px 14px; margin-bottom:6px; }}
-  summary {{ cursor:pointer; font-weight:600; color:#333; font-size:.85rem; }}
+
+  /* ── run history details ── */
+  details {{
+    background:var(--card); border:1px solid var(--border);
+    border-radius:8px; padding:12px 16px; margin-bottom:6px;
+    box-shadow:0 1px 2px rgba(15,23,42,.04);
+    transition:box-shadow .15s;
+  }}
+  details[open] {{ box-shadow:0 2px 8px rgba(15,23,42,.08); }}
+  summary {{
+    cursor:pointer; font-weight:600; color:var(--text);
+    font-size:.85rem; user-select:none;
+    display:flex; align-items:center; gap:8px;
+  }}
+  summary::marker {{ color:var(--muted); }}
   summary:hover {{ color:var(--accent); }}
-  .inner {{ margin-top:8px; font-size:.77rem; }}
-  .inner td {{ padding:3px 8px; }}
-  .legend {{ display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:.82rem; }}
-  .dot {{ width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:5px; }}
-  .progress-bar-outer {{ background:#d8d8d8; height:22px; margin:12px 0; border-radius:4px; overflow:hidden; }}
-  .progress-bar-inner {{ height:100%; background:linear-gradient(90deg,#4361ee,#f72585);
-                          border-radius:4px; position:relative; min-width:2px; transition:width .4s; }}
-  .progress-bar-label {{ position:absolute; right:6px; top:50%; transform:translateY(-50%);
-                          font-size:.72rem; font-weight:700; color:#fff;
-                          text-shadow:0 1px 2px rgba(0,0,0,.3); white-space:nowrap; }}
+  .inner {{ margin-top:10px; font-size:.77rem; }}
+  .inner td {{ padding:4px 10px; }}
+
+  /* ── legend ── */
+  .legend {{ display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px;
+             font-size:.8rem; color:var(--muted); align-items:center; }}
+  .dot {{ width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:4px; }}
+
+  /* ── progress bar ── */
+  .progress-bar-outer {{ background:#dde1e9; height:18px; margin:14px 0;
+                          border-radius:99px; overflow:hidden; }}
+  .progress-bar-inner {{ height:100%; background:linear-gradient(90deg,var(--accent),#a855f7);
+                          border-radius:99px; position:relative; min-width:4px; transition:width .5s; }}
+  .progress-bar-label {{ position:absolute; right:8px; top:50%; transform:translateY(-50%);
+                          font-size:.68rem; font-weight:700; color:#fff;
+                          text-shadow:0 1px 2px rgba(0,0,0,.35); white-space:nowrap; }}
+
+  /* ── prog card legacy classes (used by JS) ── */
   .prog-card {{ border-left:4px solid var(--accent); }}
   .prog-header {{ display:flex; justify-content:space-between; align-items:baseline;
                   flex-wrap:wrap; gap:6px; padding-bottom:12px; margin-bottom:14px;
                   border-bottom:1px solid var(--border); }}
   .prog-run-id {{ font-weight:700; font-size:.95rem; color:var(--text); margin-right:10px; }}
   .prog-started {{ font-size:.8rem; color:var(--muted); }}
-  .prog-meta {{ font-size:.78rem; color:var(--muted); }}
-  .prog-stats {{ display:flex; gap:28px; flex-wrap:wrap; margin-bottom:4px; }}
+  .prog-meta    {{ font-size:.78rem; color:var(--muted); }}
+  .prog-stats   {{ display:flex; gap:28px; flex-wrap:wrap; margin-bottom:4px; }}
   .prog-stat-label {{ color:var(--muted); font-size:.68rem; text-transform:uppercase;
                       letter-spacing:.07em; font-weight:700; display:block; margin-bottom:3px; }}
   .prog-stat-value {{ font-size:.92rem; font-weight:600; color:var(--text); }}
@@ -702,18 +937,41 @@ def generate_report(out_root, history, bests, methods_order=None):
   .prog-row {{ display:flex; align-items:baseline; gap:8px; font-size:.82rem; }}
   .prog-row-label {{ color:var(--muted); font-size:.68rem; text-transform:uppercase;
                      letter-spacing:.06em; font-weight:700; min-width:130px; flex-shrink:0; }}
-  .prog-row-val {{ color:#333; }}
+  .prog-row-val {{ color:#334155; }}
   .prog-row-val.running {{ color:var(--accent); font-weight:600; }}
-  .imp {{ color:#2a7a3a; font-size:.78rem; }}
-  .warn {{ color:#c0392b; font-size:.78rem; }}
+
+  /* ── misc ── */
+  .imp  {{ color:#16a34a; font-size:.78rem; }}
+  .warn {{ color:#dc2626; font-size:.78rem; }}
+  .cfg  {{ color:#94a3b8; font-size:.68rem; font-weight:400; font-style:normal; }}
+  .best-cell {{ background:#f0fdf4 !important; }}
+  .ls-wait {{ color:#cbd5e1; font-size:.77rem; }}
+  .ls-ph1  {{ color:#d97706; font-weight:600; font-size:.77rem; }}
+  .ls-ph2  {{ color:#2563eb; font-weight:600; font-size:.77rem; }}
+  .ls-ils  {{ color:#7c3aed; font-weight:600; font-size:.77rem; }}
+  .ls-lns  {{ color:#0891b2; font-weight:600; font-size:.77rem; }}
+  .ls-done {{ color:#16a34a; font-weight:700; font-size:.77rem; }}
 </style>
 </head>
 <body>
-<h1>GD-2025 k-planarity Results</h1>
-<div class="sub">Generated {now} &nbsp;|&nbsp; {len(graphs)} graphs &nbsp;|&nbsp; {n_runs} runs</div>
+<div class="page-header">
+  <h1>GD-2025 k-planarity <span class="badge">Results</span></h1>
+  <div class="sub">
+    <span>Generated {now}</span>
+    <span class="sub-dot">·</span>
+    <span>{len(graphs)} graphs</span>
+    <span class="sub-dot">·</span>
+    <span>{n_runs} runs</span>
+  </div>
+</div>
 
 <div class="legend">{legend}</div>
+<!-- PROGRESS_START -->
 {progress_html}
+<!-- PROGRESS_END -->
+<!-- LIVE_STATUS_START -->
+{live_html}
+<!-- LIVE_STATUS_END -->
 <h2>Best Results (All Runs)</h2>
 <div class="card">
 <table>
@@ -907,6 +1165,23 @@ def main():
     run_dir   = out_root / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Background thread: regenerate report every 5 s with live log data.
+    _stop_bg = threading.Event()
+
+    def _bg_report():
+        while not _stop_bg.wait(5):
+            try:
+                live = scan_live_status(run_dir, methods)
+                _h   = load_json(out_root / "history.json", {"runs": []})
+                _b   = load_json(out_root / "bests.json",   {})
+                generate_report(out_root, _h, _b,
+                                methods_order=methods, live_status=live)
+            except Exception:
+                pass
+
+    _bg = threading.Thread(target=_bg_report, daemon=True, name="bg-report")
+    _bg.start()
+
     # Estimate total wall-clock.
     total_est = sum(budget_for(i, minutes_map) for i in indices) * len(methods)
     print(f"[run] id={run_id}")
@@ -1022,7 +1297,9 @@ def main():
                     "combos":      all_combos,
                 })
             save_json(out_root / "history.json", _h)
-            generate_report(out_root, _h, bests, methods_order=methods)
+            _live = scan_live_status(run_dir, methods)
+            generate_report(out_root, _h, bests,
+                            methods_order=methods, live_status=_live)
 
         print()
 
@@ -1046,6 +1323,9 @@ def main():
         "combos": all_combos,
     }
     save_json(run_dir / "detailed.json", detail)
+
+    _stop_bg.set()
+    _bg.join(timeout=8)
 
     print(f"[done] {run_dir}")
     print(f"[done] open {out_root / 'report.html'} in a browser")

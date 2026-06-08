@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="30">
+<meta http-equiv="refresh" content="5">
 <title>GD-2025 k-planarity Results</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
@@ -69,56 +69,75 @@
   .prog-row-val.running { color:var(--accent); font-weight:600; }
   .imp { color:#2a7a3a; font-size:.78rem; }
   .warn { color:#c0392b; font-size:.78rem; }
+  .cfg { color:#888; font-size:.68rem; font-weight:400; font-style:normal; }
+  .best-cell { background:#edfbf0; }
+  .ls-wait { color:#aaa; font-style:italic; font-size:.78rem; }
+  .ls-ph1  { color:#d97706; font-weight:600; font-size:.78rem; }
+  .ls-ph2  { color:#2563eb; font-weight:600; font-size:.78rem; }
+  .ls-ils  { color:#7c3aed; font-weight:600; font-size:.78rem; }
+  .ls-lns  { color:#0891b2; font-weight:600; font-size:.78rem; }
+  .ls-done { color:#16a34a; font-weight:700; font-size:.78rem; }
 </style>
 </head>
 <body>
 <h1>GD-2025 k-planarity Results</h1>
-<div class="sub">Generated 2026-06-05 21:26:23 &nbsp;|&nbsp; 8 graphs &nbsp;|&nbsp; 2 runs</div>
+<div class="sub">Generated 2026-06-07 16:23:26 &nbsp;|&nbsp; 9 graphs &nbsp;|&nbsp; 5 runs</div>
 
-<div class="legend"><span><span class="dot" style="background:#999"></span>Baseline</span><span><span class="dot" style="background:#4361ee"></span>SA</span><span><span class="dot" style="background:#7209b7"></span>STAGED</span><span><span class="dot" style="background:#f72585"></span>ILS</span><span><span class="dot" style="background:#f4a261"></span>STAGED-ADAPTIVE</span></div>
+<div class="legend"><span><span class="dot" style="background:#999"></span>Baseline</span><span><span class="dot" style="background:#4361ee"></span>SA</span><span><span class="dot" style="background:#f72585"></span>ILS</span><span><span class="dot" style="background:#7209b7"></span>STAGED</span><span><span class="dot" style="background:#f4a261"></span>STAGED-ADAPTIVE</span></div>
 
 <h2>Run Progress</h2>
 <div class="card prog-card">
   <div class="prog-header">
     <div>
-      <span class="prog-run-id">Run 2026-06-05_19-40-28</span>
-      <span class="prog-started">started 2026-06-05 20:28:08</span>
+      <span class="prog-run-id">Run 2026-06-07_14-29-52</span>
+      <span class="prog-started">started 2026-06-07 14:30:52</span>
     </div>
-    <div class="prog-meta">2 workers &nbsp;·&nbsp; graphs [8] &nbsp;·&nbsp; SA, STAGED, ILS, STAGED-ADAPTIVE</div>
+    <div class="prog-meta">1 workers &nbsp;·&nbsp; graphs [1, 2, 3, 4, 5, 6, 7, 8, 9] &nbsp;·&nbsp; SA, ILS, STAGED, STAGED-ADAPTIVE</div>
   </div>
   <div class="prog-stats">
-    <div><span class="prog-stat-label">Combos Done</span><span class="prog-stat-value">2 / 4</span></div>
-    <div><span class="prog-stat-label">Progress</span><span class="prog-stat-value">50.0%</span></div>
-    <div><span class="prog-stat-label">Elapsed</span><span class="prog-stat-value" id="elapsed">1h 45m</span></div>
-    <div><span class="prog-stat-label">Remaining</span><span class="prog-stat-value" id="remaining">~30.0 min</span></div>
-    <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta" id="eta">21:56</span></div>
+    <div><span class="prog-stat-label">Combos Done</span><span class="prog-stat-value">36 / 36</span></div>
+    <div><span class="prog-stat-label">Progress</span><span class="prog-stat-value">100.0%</span></div>
+    <div><span class="prog-stat-label">Elapsed</span><span class="prog-stat-value" id="elapsed">1h 53m</span></div>
+    <div><span class="prog-stat-label">Remaining</span><span class="prog-stat-value" id="remaining">~0 min</span></div>
+    <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta" id="eta">16:23</span></div>
   </div>
   <div class="progress-bar-outer">
-    <div class="progress-bar-inner" style="width:50.0%">
-      <span class="progress-bar-label">50.0%</span>
+    <div class="progress-bar-inner" style="width:100.0%">
+      <span class="progress-bar-label">100.0%</span>
     </div>
   </div>
   <div class="prog-current">
-    <div class="prog-row"><span class="prog-row-label">Last completed</span><span class="prog-row-val">Automatic-8 &nbsp;/&nbsp; <em>STAGED</em> &nbsp;→&nbsp; k=9645, totalX=36253606 <span class='imp'>(+3.7%)</span></span></div>
-    <div class="prog-row"><span class="prog-row-label">Currently running</span><span class="prog-row-val running">Automatic-8 &nbsp;/&nbsp; <em>ILS</em></span></div>
+    <div class="prog-row"><span class="prog-row-label">Last completed</span><span class="prog-row-val">Automatic-9 &nbsp;/&nbsp; <em>STAGED-ADAPTIVE</em> &nbsp;→&nbsp; k=None, totalX=None <span class='warn'>⚠ invalid</span></span></div>
+    <div class="prog-row"><span class="prog-row-label">Currently running</span><span class="prog-row-val running">all combos complete</span></div>
   </div>
 </div>
+<!-- LIVE_STATUS_START -->
+<h2>Live Status <small style='font-weight:400;text-transform:none;font-size:.75rem;color:#666'>— 27/27 done, 0 running — auto-refresh 5s</small></h2><div class='card'><table><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th></tr></thead><tbody><tr><td><strong>Automatic-1</strong></td><td><span class='ls-done'>✓ k=10 X=453</span></td><td><span class='ls-done'>✓ k=10 X=431</span></td><td><span class='ls-done'>✓ k=18 X=648</span></td></tr>
+<tr><td><strong>Automatic-2</strong></td><td><span class='ls-done'>✓ k=6 X=194</span></td><td><span class='ls-done'>✓ k=6 X=311</span></td><td><span class='ls-done'>✓ k=16 X=905</span></td></tr>
+<tr><td><strong>Automatic-3</strong></td><td><span class='ls-done'>✓ k=63 X=6637</span></td><td><span class='ls-done'>✓ k=65 X=6713</span></td><td><span class='ls-done'>✓ k=62 X=4678</span></td></tr>
+<tr><td><strong>Automatic-4</strong></td><td><span class='ls-done'>✓ k=10 X=1028</span></td><td><span class='ls-done'>✓ k=11 X=1043</span></td><td><span class='ls-done'>✓ k=17 X=1776</span></td></tr>
+<tr><td><strong>Automatic-5</strong></td><td><span class='ls-done'>✓ k=1013 X=533744</span></td><td><span class='ls-done'>✓ k=1083 X=576731</span></td><td><span class='ls-done'>✓ k=902 X=450626</span></td></tr>
+<tr><td><strong>Automatic-6</strong></td><td><span class='ls-done'>✓ k=1257 X=825811</span></td><td><span class='ls-done'>✓ k=1327 X=867986</span></td><td><span class='ls-done'>✓ k=1236 X=784359</span></td></tr>
+<tr><td><strong>Automatic-7</strong></td><td><span class='ls-done'>✓ k=81 X=29141</span></td><td><span class='ls-done'>✓ k=130 X=45841</span></td><td><span class='ls-done'>✓ k=121 X=44847</span></td></tr>
+<tr><td><strong>Automatic-8</strong></td><td><span class='ls-done'>✓ k=9842 X=43170144</span></td><td><span class='ls-done'>✓ k=10101 X=45252783</span></td><td><span class='ls-done'>✓ k=9937 X=44176529</span></td></tr>
+<tr><td><strong>Automatic-9</strong></td><td><span class='ls-done'>✓ k=1947 X=1829244</span></td><td><span class='ls-done'>✓ k=2121 X=2033965</span></td><td><span class='ls-done'>✓ k=2056 X=2010447</span></td></tr></tbody></table></div>
+<!-- LIVE_STATUS_END -->
 <h2>Best Results (All Runs)</h2>
 <div class="card">
 <table>
   <thead>
-    <tr><th>Graph</th><th>Nodes</th><th>Edges</th><th>Baseline k</th><th colspan='2' style='color:#4361ee'>SA</th><th colspan='2' style='color:#7209b7'>STAGED</th><th colspan='2' style='color:#f72585'>ILS</th><th colspan='2' style='color:#f4a261'>STAGED-ADAPTIVE</th></tr>
+    <tr><th>Graph</th><th>Nodes</th><th>Edges</th><th>Baseline k</th><th colspan='2' style='color:#4361ee'>SA</th><th colspan='2' style='color:#f72585'>ILS</th><th colspan='2' style='color:#7209b7'>STAGED</th><th colspan='2' style='color:#f4a261'>STAGED-ADAPTIVE</th></tr>
     <tr><th colspan="4"></th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th></tr>
   </thead>
-  <tbody><tr><td>Automatic-1</td><td>50</td><td>202</td><td>96</td><td title='run 2026-06-03_04-33-59'><strong>9</strong></td><td>402</td><td title='run 2026-06-03_04-33-59'><strong>9</strong></td><td>406</td><td title='run 2026-06-03_04-33-59'><strong>9</strong></td><td>415</td><td title='run 2026-06-03_04-33-59'>10</td><td>417</td></tr><tr><td>Automatic-2</td><td>144</td><td>314</td><td>173</td><td title='run 2026-06-03_04-33-59'><strong>5</strong></td><td>164</td><td title='run 2026-06-03_04-33-59'>8</td><td>300</td><td title='run 2026-06-03_04-33-59'><strong>5</strong></td><td>184</td><td title='run 2026-06-03_04-33-59'>11</td><td>429</td></tr><tr><td>Automatic-3</td><td>100</td><td>420</td><td>216</td><td title='run 2026-06-03_04-33-59'><strong>50</strong></td><td>5241</td><td title='run 2026-06-03_04-33-59'>56</td><td>4358</td><td title='run 2026-06-03_04-33-59'>58</td><td>5863</td><td title='run 2026-06-03_04-33-59'><strong>50</strong></td><td>4005</td></tr><tr><td>Automatic-4</td><td>196</td><td>571</td><td>272</td><td title='run 2026-06-03_04-33-59'><strong>7</strong></td><td>684</td><td title='run 2026-06-03_04-33-59'>16</td><td>1280</td><td title='run 2026-06-03_04-33-59'>9</td><td>741</td><td title='run 2026-06-03_04-33-59'>12</td><td>891</td></tr><tr><td>Automatic-5</td><td>500</td><td>2556</td><td>1255</td><td title='run 2026-06-03_04-33-59'>441</td><td>236246</td><td title='run 2026-06-03_04-33-59'>134</td><td>71632</td><td title='run 2026-06-03_04-33-59'>518</td><td>242538</td><td title='run 2026-06-03_04-33-59'><strong>123</strong></td><td>65058</td></tr><tr><td>Automatic-6</td><td>200</td><td>3000</td><td>1523</td><td title='run 2026-06-03_04-33-59'>941</td><td>674607</td><td title='run 2026-06-03_04-33-59'>927</td><td>641584</td><td title='run 2026-06-03_04-33-59'>941</td><td>691398</td><td title='run 2026-06-03_04-33-59'><strong>851</strong></td><td>601741</td></tr><tr><td>Automatic-7</td><td>500</td><td>1740</td><td>869</td><td title='run 2026-06-03_04-33-59'><strong>44</strong></td><td>16035</td><td title='run 2026-06-03_04-33-59'>78</td><td>22168</td><td title='run 2026-06-03_04-33-59'>69</td><td>24250</td><td title='run 2026-06-03_04-33-59'>63</td><td>18458</td></tr><tr><td>Automatic-8</td><td>10466</td><td>20288</td><td>10011</td><td title='budget 15.0 min | 2 workers | wall 2860.2s | run 2026-06-05_19-40-28'>9811</td><td>37469978</td><td title='budget 15.0 min | 2 workers | wall 3495.0s | run 2026-06-05_19-40-28'><strong>9645</strong></td><td>36253606</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody>
+  <tbody><tr><td>Automatic-1</td><td>50</td><td>202</td><td>96</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 426.4s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>401</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.0s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>407</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.4s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>409</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.2s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>396</td></tr><tr><td>Automatic-2</td><td>144</td><td>314</td><td>173</td><td class='best-cell'><strong>4</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 417.9s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>110</td><td class='best-cell'><strong>4</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.0s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>130</td><td>6<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.0s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>243</td><td>5<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.1s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>173</td></tr><tr><td>Automatic-3</td><td>100</td><td>420</td><td>216</td><td class='best-cell'><strong>54</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.0s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>5522</td><td>58<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.4s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>5985</td><td>58<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.1s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>4308</td><td>—</td><td>—</td></tr><tr><td>Automatic-4</td><td>196</td><td>571</td><td>272</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-07_13-59-19</small></td><td>926</td><td>10<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-07_13-41-13</small></td><td>1113</td><td>17<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>1776</td><td>—</td><td>—</td></tr><tr><td>Automatic-5</td><td>500</td><td>2556</td><td>1255</td><td>1002<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 91.5s &nbsp;·&nbsp; run 2026-06-07_13-41-13</small></td><td>530270</td><td>1077<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 92.4s &nbsp;·&nbsp; run 2026-06-07_13-59-19</small></td><td>571142</td><td class='best-cell'><strong>902</strong><br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 96.0s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>450626</td><td>—</td><td>—</td></tr><tr><td>Automatic-6</td><td>200</td><td>3000</td><td>1523</td><td>1247<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 92.5s &nbsp;·&nbsp; run 2026-06-07_13-41-13</small></td><td>808710</td><td>1288<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 93.2s &nbsp;·&nbsp; run 2026-06-07_13-59-19</small></td><td>805338</td><td class='best-cell'><strong>1236</strong><br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 95.9s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>784359</td><td>—</td><td>—</td></tr><tr><td>Automatic-7</td><td>500</td><td>1740</td><td>869</td><td class='best-cell'><strong>81</strong><br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 90.6s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>29141</td><td>130<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 90.6s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>45841</td><td>121<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 90.9s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>44847</td><td>—</td><td>—</td></tr><tr><td>Automatic-8</td><td>10466</td><td>20288</td><td>10193</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-9</td><td>2519</td><td>4938</td><td>2542</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody>
 </table>
 </div>
 
 <h2>Method Runtime &amp; Config</h2>
-<div class='card'><table><thead><tr><th>Method</th><th>Budget / combo</th><th>Workers</th><th>Combos run</th><th>Graphs</th><th>Avg wall / combo</th><th>Total wall</th></tr></thead><tbody><tr><td style='color:#4361ee;font-weight:700'>SA</td><td>5.0–15.0 min</td><td>2</td><td>9</td><td>8</td><td>13m 41s</td><td>2h 3m</td></tr>
-<tr><td style='color:#7209b7;font-weight:700'>STAGED</td><td>5.0–15.0 min</td><td>2</td><td>9</td><td>8</td><td>16m 52s</td><td>2h 31m</td></tr>
-<tr><td style='color:#f72585;font-weight:700'>ILS</td><td>5.0–15.0 min</td><td>2</td><td>8</td><td>8</td><td>10m 40s</td><td>1h 25m</td></tr>
-<tr><td style='color:#f4a261;font-weight:700'>STAGED-ADAPTIVE</td><td>5.0–8.0 min</td><td>2</td><td>7</td><td>7</td><td>6m 17s</td><td>44m 5s</td></tr></tbody></table></div>
+<div class='card'><table><thead><tr><th>Method</th><th>Budget / combo</th><th>Workers</th><th>Combos run</th><th>Graphs</th><th>Avg wall / combo</th><th>Total wall</th></tr></thead><tbody><tr><td style='color:#4361ee;font-weight:700'>SA</td><td>1.0–8.0 min</td><td>1–4</td><td>35</td><td>9</td><td>2m 26s</td><td>1h 25m</td></tr>
+<tr><td style='color:#f72585;font-weight:700'>ILS</td><td>1.0–8.0 min</td><td>1–4</td><td>35</td><td>9</td><td>3m 39s</td><td>2h 8m</td></tr>
+<tr><td style='color:#7209b7;font-weight:700'>STAGED</td><td>1.0–8.0 min</td><td>1–4</td><td>21</td><td>9</td><td>4m 49s</td><td>1h 41m</td></tr>
+<tr><td style='color:#f4a261;font-weight:700'>STAGED-ADAPTIVE</td><td>1.0–8.0 min</td><td>1–4</td><td>11</td><td>9</td><td>3m 10s</td><td>34m 50s</td></tr></tbody></table></div>
 
 <h2>k-value Comparison</h2>
 <div class="charts">
@@ -128,51 +147,95 @@
 
 <h2>Run History</h2>
 <details>
-          <summary>Run 2026-06-05_19-40-28 &nbsp;|&nbsp; 2026-06-05T20:28:08
-            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
-            methods=[sa, staged, ils, staged-adaptive]
-            &nbsp;|&nbsp; 2 combos</summary>
-          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>STAGED</th><th>ILS</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-8</td><td>9811 <small>(+2.0%)</small><br><small>⏱ 2860.2s | 2w</small></td><td>9645 <small>(+3.7%)</small><br><small>⏱ 3495.0s | 2w</small></td><td>—</td><td>—</td></tr></tbody></table>
+          <summary>Run 2026-06-07_14-29-52 &nbsp;|&nbsp; 2026-06-07T14:30:52
+            &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
+            methods=[sa, ils, staged, staged-adaptive] &nbsp;·&nbsp; budget [S=1.0m, M=1.0m, L=1.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 36 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>17 <small>(+82.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>16 <small>(+83.3%)</small><br><small>⏱ 60.0s | 1w</small></td></tr>
+<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 60.0s | 1w</small></td><td>7 <small>(+96.0%)</small><br><small>⏱ 60.0s | 1w</small></td><td>10 <small>(+94.2%)</small><br><small>⏱ 60.0s | 1w</small></td><td>8 <small>(+95.4%)</small><br><small>⏱ 60.0s | 1w</small></td></tr>
+<tr><td>Automatic-3</td><td>64 <small>(+70.4%)</small><br><small>⏱ 60.0s | 1w</small></td><td>65 <small>(+69.9%)</small><br><small>⏱ 60.0s | 1w</small></td><td>64 <small>(+70.4%)</small><br><small>⏱ 60.1s | 1w</small></td><td>60 <small>(+72.2%)</small><br><small>⏱ 60.1s | 1w</small></td></tr>
+<tr><td>Automatic-4</td><td>11 <small>(+96.0%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 60.1s | 1w</small></td><td>17 <small>(+93.8%)</small><br><small>⏱ 60.1s | 1w</small></td><td>16 <small>(+94.1%)</small><br><small>⏱ 60.1s | 1w</small></td></tr>
+<tr><td>Automatic-5</td><td>1092 <small>(+13.0%)</small><br><small>⏱ 61.7s | 1w</small></td><td>1111 <small>(+11.5%)</small><br><small>⏱ 62.2s | 1w</small></td><td>1005 <small>(+19.9%)</small><br><small>⏱ 65.2s | 1w</small></td><td>1021 <small>(+18.6%)</small><br><small>⏱ 65.8s | 1w</small></td></tr>
+<tr><td>Automatic-6</td><td>1272 <small>(+16.5%)</small><br><small>⏱ 62.5s | 1w</small></td><td>1334 <small>(+12.4%)</small><br><small>⏱ 63.5s | 1w</small></td><td>1310 <small>(+14.0%)</small><br><small>⏱ 69.3s | 1w</small></td><td>1268 <small>(+16.7%)</small><br><small>⏱ 65.1s | 1w</small></td></tr>
+<tr><td>Automatic-7</td><td>144 <small>(+83.4%)</small><br><small>⏱ 60.6s | 1w</small></td><td>356 <small>(+59.0%)</small><br><small>⏱ 60.8s | 1w</small></td><td>188 <small>(+78.4%)</small><br><small>⏱ 61.0s | 1w</small></td><td>223 <small>(+74.3%)</small><br><small>⏱ 61.4s | 1w</small></td></tr>
+<tr><td>Automatic-8</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-9</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
         </details>
 <details>
-          <summary>Run 2026-06-03_04-33-59 &nbsp;|&nbsp; 2026-06-03T04:38:34
-            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
-            methods=[sa, staged, ils, staged-adaptive]
-            &nbsp;|&nbsp; 31 combos</summary>
-          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>STAGED</th><th>ILS</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.6%)</small><br><small>⏱ 275.0s | 2w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 300.5s | 2w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 300.0s | 2w</small></td><td>10 <small>(+89.6%)</small><br><small>⏱ 300.0s | 2w</small></td></tr>
-<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 181.5s | 2w</small></td><td>8 <small>(+95.4%)</small><br><small>⏱ 300.0s | 2w</small></td><td>5 <small>(+97.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>11 <small>(+93.6%)</small><br><small>⏱ 300.0s | 2w</small></td></tr>
-<tr><td>Automatic-3</td><td>50 <small>(+76.9%)</small><br><small>⏱ 300.1s | 2w</small></td><td>56 <small>(+74.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>58 <small>(+73.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>50 <small>(+76.9%)</small><br><small>⏱ 300.1s | 2w</small></td></tr>
-<tr><td>Automatic-4</td><td>7 <small>(+97.4%)</small><br><small>⏱ 300.0s | 2w</small></td><td>16 <small>(+94.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>9 <small>(+96.7%)</small><br><small>⏱ 300.0s | 2w</small></td><td>12 <small>(+95.6%)</small><br><small>⏱ 300.1s | 2w</small></td></tr>
-<tr><td>Automatic-5</td><td>441 <small>(+64.9%)</small><br><small>⏱ 480.9s | 2w</small></td><td>134 <small>(+89.3%)</small><br><small>⏱ 481.6s | 2w</small></td><td>518 <small>(+58.7%)</small><br><small>⏱ 481.0s | 2w</small></td><td>123 <small>(+90.2%)</small><br><small>⏱ 481.6s | 2w</small></td></tr>
-<tr><td>Automatic-6</td><td>941 <small>(+38.2%)</small><br><small>⏱ 481.5s | 2w</small></td><td>927 <small>(+39.1%)</small><br><small>⏱ 484.1s | 2w</small></td><td>941 <small>(+38.2%)</small><br><small>⏱ 482.1s | 2w</small></td><td>851 <small>(+44.1%)</small><br><small>⏱ 482.7s | 2w</small></td></tr>
-<tr><td>Automatic-7</td><td>44 <small>(+94.9%)</small><br><small>⏱ 480.4s | 2w</small></td><td>78 <small>(+91.0%)</small><br><small>⏱ 480.5s | 2w</small></td><td>69 <small>(+92.1%)</small><br><small>⏱ 480.4s | 2w</small></td><td>63 <small>(+92.8%)</small><br><small>⏱ 480.5s | 2w</small></td></tr>
-<tr><td>Automatic-8</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+          <summary>Run 2026-06-07_14-24-56 &nbsp;|&nbsp; 2026-06-07T14:25:56
+            &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
+            methods=[sa, ils, staged] &nbsp;·&nbsp; budget [S=1.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 27 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>10 <small>(+89.6%)</small><br><small>⏱ 60.0s | 1w</small></td><td>10 <small>(+89.6%)</small><br><small>⏱ 60.0s | 1w</small></td><td>18 <small>(+81.2%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td></tr>
+<tr><td>Automatic-2</td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>16 <small>(+90.8%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td></tr>
+<tr><td>Automatic-3</td><td>63 <small>(+70.8%)</small><br><small>⏱ 60.0s | 1w</small></td><td>65 <small>(+69.9%)</small><br><small>⏱ 60.0s | 1w</small></td><td>62 <small>(+71.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td></tr>
+<tr><td>Automatic-4</td><td>10 <small>(+96.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 60.0s | 1w</small></td><td>17 <small>(+93.8%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td></tr>
+<tr><td>Automatic-5</td><td>1013 <small>(+19.3%)</small><br><small>⏱ 91.6s | 1w</small></td><td>1083 <small>(+13.7%)</small><br><small>⏱ 92.5s | 1w</small></td><td>902 <small>(+28.1%)</small><br><small>⏱ 96.0s | 1w</small></td><td>—</td></tr>
+<tr><td>Automatic-6</td><td>1257 <small>(+17.5%)</small><br><small>⏱ 92.7s | 1w</small></td><td>1327 <small>(+12.9%)</small><br><small>⏱ 94.0s | 1w</small></td><td>1236 <small>(+18.8%)</small><br><small>⏱ 95.9s | 1w</small></td><td>—</td></tr>
+<tr><td>Automatic-7</td><td>81 <small>(+90.7%)</small><br><small>⏱ 90.6s | 1w</small></td><td>130 <small>(+85.0%)</small><br><small>⏱ 90.6s | 1w</small></td><td>121 <small>(+86.1%)</small><br><small>⏱ 90.9s | 1w</small></td><td>—</td></tr>
+<tr><td>Automatic-8</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-9</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+        </details>
+<details>
+          <summary>Run 2026-06-07_13-59-19 &nbsp;|&nbsp; 2026-06-07T14:00:19
+            &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
+            methods=[sa, ils] &nbsp;·&nbsp; budget [S=1.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 14 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>10 <small>(+89.6%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 60.0s | 1w</small></td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-3</td><td>63 <small>(+70.8%)</small><br><small>⏱ 60.0s | 1w</small></td><td>65 <small>(+69.9%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-4</td><td>9 <small>(+96.7%)</small><br><small>⏱ 60.0s | 1w</small></td><td>12 <small>(+95.6%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-5</td><td>1128 <small>(+10.1%)</small><br><small>⏱ 94.0s | 1w</small></td><td>1077 <small>(+14.2%)</small><br><small>⏱ 92.4s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-6</td><td>1248 <small>(+18.1%)</small><br><small>⏱ 92.5s | 1w</small></td><td>1288 <small>(+15.4%)</small><br><small>⏱ 93.2s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-7</td><td>103 <small>(+88.1%)</small><br><small>⏱ 90.5s | 1w</small></td><td>135 <small>(+84.5%)</small><br><small>⏱ 90.7s | 1w</small></td><td>—</td><td>—</td></tr></tbody></table>
+        </details>
+<details>
+          <summary>Run 2026-06-07_13-41-13 &nbsp;|&nbsp; 2026-06-07T13:42:13
+            &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
+            methods=[sa, ils] &nbsp;·&nbsp; budget [S=1.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 14 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-2</td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>7 <small>(+96.0%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-3</td><td>65 <small>(+69.9%)</small><br><small>⏱ 60.0s | 1w</small></td><td>64 <small>(+70.4%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-4</td><td>10 <small>(+96.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>10 <small>(+96.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-5</td><td>1002 <small>(+20.2%)</small><br><small>⏱ 91.5s | 1w</small></td><td>1078 <small>(+14.1%)</small><br><small>⏱ 92.2s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-6</td><td>1247 <small>(+18.1%)</small><br><small>⏱ 92.5s | 1w</small></td><td>1311 <small>(+13.9%)</small><br><small>⏱ 93.4s | 1w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-7</td><td>88 <small>(+89.9%)</small><br><small>⏱ 90.6s | 1w</small></td><td>133 <small>(+84.7%)</small><br><small>⏱ 90.6s | 1w</small></td><td>—</td><td>—</td></tr></tbody></table>
+        </details>
+<details>
+          <summary>Run 2026-06-05_10-23-20 &nbsp;|&nbsp; 2026-06-05T10:30:26
+            &nbsp;|&nbsp; workers=4 &nbsp;|&nbsp;
+            methods=[sa, staged, ils, staged-adaptive] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 11 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.6%)</small><br><small>⏱ 426.4s | 4w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 480.0s | 4w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 480.4s | 4w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 480.2s | 4w</small></td></tr>
+<tr><td>Automatic-2</td><td>4 <small>(+97.7%)</small><br><small>⏱ 417.9s | 4w</small></td><td>4 <small>(+97.7%)</small><br><small>⏱ 480.0s | 4w</small></td><td>6 <small>(+96.5%)</small><br><small>⏱ 480.0s | 4w</small></td><td>5 <small>(+97.1%)</small><br><small>⏱ 480.1s | 4w</small></td></tr>
+<tr><td>Automatic-3</td><td>54 <small>(+75.0%)</small><br><small>⏱ 480.0s | 4w</small></td><td>58 <small>(+73.1%)</small><br><small>⏱ 480.4s | 4w</small></td><td>58 <small>(+73.1%)</small><br><small>⏱ 480.1s | 4w</small></td><td>—</td></tr></tbody></table>
         </details>
 
 <script>
-const GL = ["Automatic-1", "Automatic-2", "Automatic-3", "Automatic-4", "Automatic-5", "Automatic-6", "Automatic-7", "Automatic-8"];
+const GL = ["Automatic-1", "Automatic-2", "Automatic-3", "Automatic-4", "Automatic-5", "Automatic-6", "Automatic-7", "Automatic-8", "Automatic-9"];
 new Chart(document.getElementById('kChart'), {
   type:'bar',
   data:{ labels:GL, datasets:[{
             label: 'Baseline',
-            data: [96, 173, 216, 272, 1255, 1523, 869, 10011],
+            data: [96, 173, 216, 272, 1255, 1523, 869, 10193, 2542],
             backgroundColor: 'rgba(160,160,160,0.4)',
             borderColor: '#aaaaaa', borderWidth: 1,
         },{
             label: 'SA',
-            data: [9, 5, 50, 7, 441, 941, 44, 9811],
+            data: [9, 4, 54, 9, 1002, 1247, 81, null, null],
             backgroundColor: '#4361ee99', borderColor: '#4361ee', borderWidth: 2,
         },{
-            label: 'STAGED',
-            data: [9, 8, 56, 16, 134, 927, 78, 9645],
-            backgroundColor: '#7209b799', borderColor: '#7209b7', borderWidth: 2,
-        },{
             label: 'ILS',
-            data: [9, 5, 58, 9, 518, 941, 69, null],
+            data: [9, 4, 58, 10, 1077, 1288, 130, null, null],
             backgroundColor: '#f7258599', borderColor: '#f72585', borderWidth: 2,
         },{
+            label: 'STAGED',
+            data: [9, 6, 58, 17, 902, 1236, 121, null, null],
+            backgroundColor: '#7209b799', borderColor: '#7209b7', borderWidth: 2,
+        },{
             label: 'STAGED-ADAPTIVE',
-            data: [10, 11, 50, 12, 123, 851, 63, null],
+            data: [9, 5, null, null, null, null, null, null, null],
             backgroundColor: '#f4a26199', borderColor: '#f4a261', borderWidth: 2,
         }] },
   options:{ responsive:true,
@@ -189,19 +252,19 @@ new Chart(document.getElementById('improvChart'), {
   type:'bar',
   data:{ labels:GL, datasets:[{
             label: 'SA',
-            data: [90.6, 97.1, 76.9, 97.4, 64.9, 38.2, 94.9, 2.0],
+            data: [90.6, 97.7, 75.0, 96.7, 20.2, 18.1, 90.7, null, null],
             backgroundColor: '#4361ee99', borderColor: '#4361ee', borderWidth: 2,
         },{
-            label: 'STAGED',
-            data: [90.6, 95.4, 74.1, 94.1, 89.3, 39.1, 91.0, 3.7],
-            backgroundColor: '#7209b799', borderColor: '#7209b7', borderWidth: 2,
-        },{
             label: 'ILS',
-            data: [90.6, 97.1, 73.1, 96.7, 58.7, 38.2, 92.1, null],
+            data: [90.6, 97.7, 73.1, 96.3, 14.2, 15.4, 85.0, null, null],
             backgroundColor: '#f7258599', borderColor: '#f72585', borderWidth: 2,
         },{
+            label: 'STAGED',
+            data: [90.6, 96.5, 73.1, 93.8, 28.1, 18.8, 86.1, null, null],
+            backgroundColor: '#7209b799', borderColor: '#7209b7', borderWidth: 2,
+        },{
             label: 'STAGED-ADAPTIVE',
-            data: [89.6, 93.6, 76.9, 95.6, 90.2, 44.1, 92.8, null],
+            data: [90.6, 97.1, null, null, null, null, null, null, null],
             backgroundColor: '#f4a26199', borderColor: '#f4a261', borderWidth: 2,
         }] },
   options:{ responsive:true,
@@ -215,9 +278,9 @@ new Chart(document.getElementById('improvChart'), {
   }
 });
 (function(){
-  const START_MS      = 1780681228000;
-  const REPORT_MS     = 1780687583459;
-  const REMAIN_AT_GEN = 30.0 * 60;
+  const START_MS      = 1780835392000;
+  const REPORT_MS     = 1780842206774;
+  const REMAIN_AT_GEN = 0 * 60;
   if (!START_MS) return;
   function fmt(sec) {
     sec = Math.max(0, Math.floor(sec));
