@@ -1,0 +1,38 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build C++ binaries
+        run: make all
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync project to VPS
+        run: |
+          rsync -az --delete \
+            --exclude='.git/' \
+            --exclude='.DS_Store' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.github/' \
+            --exclude='results/runs/' \
+            . "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/graphcontest/"
+
+      - name: Restart service
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "systemctl restart graphcontest"
