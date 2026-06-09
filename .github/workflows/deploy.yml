@@ -31,7 +31,7 @@ jobs:
             --exclude='*.pyc' \
             --exclude='.github/' \
             --exclude='results/runs/' \
-            . "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/home/repos/GraphContestSAkGD/"
+            . "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/graphcontest/"
 
       - name: Restart service
         run: |
