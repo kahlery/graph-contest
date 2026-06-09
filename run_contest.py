@@ -42,12 +42,20 @@ GRAPH_GROUPS = {
 }
 
 METHOD_COLORS = {
-    "sa":              "#4361ee",
-    "staged":          "#7209b7",
-    "ils":             "#f72585",
-    "staged-adaptive": "#f4a261",
+    "sa":                     "#4361ee",
+    "staged":                 "#7209b7",
+    "ils":                    "#f72585",
+    "staged-adaptive":        "#f4a261",
+    # baseline (old-selection) variants — lighter/desaturated tints of the pair
+    "sa-base":                "#9db2f5",
+    "staged-base":            "#bb8fd6",
+    "ils-base":               "#fa9fc7",
+    "staged-adaptive-base":   "#f7cfa6",
 }
 DEFAULT_COLORS = ["#4361ee", "#7209b7", "#f72585", "#f4a261", "#4cc9f0"]
+
+# How many recent runs get embedded convergence charts in Run History.
+RUN_TS_LIMIT = 12
 
 INITIAL_RE = re.compile(
     r"Initial:\s*k=(\d+)\s+totalX=(\d+)\s+vertexEdgeOverlap=(no|YES)")
@@ -140,6 +148,149 @@ def verify_output(layout_path):
 
 
 # ---------------------------------------------------------------------------
+# Convergence time-series — parse a solver log into [t_seconds, k, totalX] points.
+#
+# Every solver phase/segment logs a start line carrying a *lowercase* `budget=Ns`
+# plus `initial k=K totalX=T`, periodic `t=Ns  bestK=K bestX=T` ticks, and an
+# `end ... bestK=K bestX=T` line. The lowercase `budget=` is the trick that lets
+# one parser serve SA, LNS and ILS uniformly: ILS's outer markers use capital-B
+# `innerBudget=`/`totalBudget=`, so they are ignored and only the real per-segment
+# budgets advance the clock. Segments are chained on a cumulative offset, so a
+# multi-phase (or multi-stage) run yields one continuous absolute-time series.
+# ---------------------------------------------------------------------------
+_TS_ANCHOR = re.compile(r"(?<![A-Za-z])budget=(\d+(?:\.\d+)?)s.*?initial k=(\d+) totalX=(\d+)")
+_TS_TICK   = re.compile(r"t=(\d+(?:\.\d+)?)s\s+bestK=(\d+) bestX=(\d+)")
+_TS_END    = re.compile(r"\bend\b.*?bestK=(\d+) bestX=(\d+)")
+
+
+def _parse_log_series(path, base=0.0):
+    """Parse one log into ([[t,k,x],...], end_offset), times shifted by `base`."""
+    pts = []
+    cum = base
+    seg_start = base
+    seg_bud = 0.0
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return pts, cum
+    for line in text.splitlines():
+        m = _TS_ANCHOR.search(line)
+        if m:
+            seg_bud   = float(m.group(1))
+            seg_start = cum
+            pts.append([round(seg_start, 1), int(m.group(2)), int(m.group(3))])
+            cum = seg_start + seg_bud
+            continue
+        m = _TS_TICK.search(line)
+        if m:
+            tt = seg_start + float(m.group(1))
+            pts.append([round(tt, 1), int(m.group(2)), int(m.group(3))])
+            cum = max(cum, tt)
+            continue
+        m = _TS_END.search(line)
+        if m:
+            tt = seg_start + seg_bud
+            pts.append([round(tt, 1), int(m.group(1)), int(m.group(2))])
+            cum = max(cum, tt)
+    return pts, cum
+
+
+def _read_trace(path, base=0.0):
+    """Parse a solver `.trace` file ("absSec bestK bestX" per line)."""
+    pts = []
+    end = base
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return pts, end
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) != 3:
+            continue
+        try:
+            t = base + float(f[0]); k = int(f[1]); x = int(f[2])
+        except ValueError:
+            continue
+        pts.append([round(t, 1), k, x])
+        end = max(end, t)
+    return pts, end
+
+
+def build_worker_series(spec, graph_dir, suffix):
+    """One worker's continuous [t,k,x] series: prefer .trace files (1 s cadence),
+    fall back to parsing the .log periodic lines. Stages chain on cumulative time."""
+    cum = 0.0
+    out = []
+    for i in range(len(spec["stages"])):
+        log   = _stage_files(spec, i, graph_dir, suffix)[1]
+        trace = log.with_suffix(".trace")
+        if trace.exists():
+            pts, cum = _read_trace(trace, cum)
+        else:
+            pts, cum = _parse_log_series(log, cum)
+        out.extend(pts)
+    out.sort(key=lambda p: p[0])
+    dedup = []
+    for p in out:
+        if not dedup or dedup[-1] != p:
+            dedup.append(p)
+    return dedup
+
+
+def _envelope(worker_series):
+    """Merge per-worker best-so-far series into the best-of-all-workers curve:
+    at each sampled second take the lowest k (tiebreak lowest totalX) any worker
+    has reached by then."""
+    series = [s for s in worker_series if s]
+    if not series:
+        return []
+    times = sorted({p[0] for s in series for p in s})
+    idx = [0] * len(series)
+    cur = [None] * len(series)        # each worker's as-of (k, x)
+    out = []
+    for t in times:
+        for wi, s in enumerate(series):
+            while idx[wi] < len(s) and s[idx[wi]][0] <= t:
+                cur[wi] = (s[idx[wi]][1], s[idx[wi]][2])
+                idx[wi] += 1
+        avail = [c for c in cur if c is not None]
+        if not avail:
+            continue
+        best = min(avail)             # (k, x) lexicographic
+        pt = [t, best[0], best[1]]
+        if not out or out[-1][1:] != pt[1:]:   # keep only k/x transitions
+            out.append(pt)
+        elif out:
+            out[-1][0] = t            # extend flat segment to current time
+    return out
+
+
+def collect_run_timeseries(out_root, run_id, graphs, methods, n_workers=1):
+    """{graph: {method: [[t,k,x],...]}} — best-of-all-workers convergence per run."""
+    run_dir = Path(out_root) / "runs" / str(run_id)
+    series = {}
+    if not run_dir.exists():
+        return series
+    suffixes = [f"_w{w}" for w in range(max(1, int(n_workers)))]
+    for g in graphs:
+        gdir = run_dir / g
+        if not gdir.is_dir():
+            continue
+        per_method = {}
+        for m in methods:
+            spec = METHOD_BY_ID.get(m)
+            if spec is None:
+                continue
+            workers = [build_worker_series(spec, gdir, sfx) for sfx in suffixes]
+            env = _envelope(workers)
+            if env:
+                per_method[m] = env
+        if per_method:
+            series[g] = per_method
+    return series
+
+
+# ---------------------------------------------------------------------------
 # single-worker solver launchers  ->  (out_path, rc, wall_sec, first_log, final_log)
 # ---------------------------------------------------------------------------
 def _run(cmd, log_path):
@@ -149,52 +300,116 @@ def _run(cmd, log_path):
     return proc.returncode, time.time() - t0
 
 
-def run_sa(gpath, total_min, p1_frac, seed, out_dir, suffix=""):
-    out = out_dir / f"sa{suffix}.json"
-    log = out_dir / f"sa{suffix}.log"
-    cmd = [str(SAKGD), "-i", str(gpath), "-o", str(out),
-           "-t", mins(total_min), "-p1", mins(total_min * p1_frac),
-           "-s", str(seed)]
-    rc, sec = _run(cmd, log)
-    return out, rc, sec, log, log
+# ---------------------------------------------------------------------------
+# Method registry — single source of truth.
+#
+# A method is an ordered list of *stages*; each stage launches one solver
+# process. Multi-stage methods chain via warm-start (a stage reads the previous
+# stage's output instead of the raw graph). Adding a method = add one dict here;
+# dispatch, validation, live-status log naming, the report tables and the web
+# control-panel checkboxes all derive from this list automatically.
+#
+# Stage fields:
+#   bin   : "sakgd" | "approach1"        which binary
+#   mode  : approach1 --mode value       (omit / None for plain sakgd SA)
+#   tag   : short token for file/log names of multi-stage methods
+#   frac  : "full" | "lns" | "rest"      share of the time budget
+#   warm  : True -> input is the previous stage's output
+# Method fields:
+#   id, label                            identity + UI label
+#   kband : phase-2 vertex selection band (2 = k-critical default, -1 = the
+#           original "baseline" selection). Only emitted when != 2.
+# ---------------------------------------------------------------------------
+def _stages_sa():   return [{"bin": "sakgd", "frac": "full"}]
+def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
+def _stages_staged(lns_mode):
+    return [{"bin": "approach1", "mode": lns_mode, "tag": "lns", "frac": "lns"},
+            {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True}]
+
+METHODS = [
+    {"id": "sa",                   "label": "SA",                 "kband": 2,  "stages": _stages_sa()},
+    {"id": "ils",                  "label": "ILS",                "kband": 2,  "stages": _stages_ils()},
+    {"id": "staged",               "label": "Staged",             "kband": 2,  "stages": _stages_staged("lns")},
+    {"id": "staged-adaptive",      "label": "Staged-Adaptive",    "kband": 2,  "stages": _stages_staged("lns-adaptive")},
+    # Baseline variants: identical algorithm, original (pre-k-critical) Phase-2
+    # vertex selection via --kband -1. Kept so old vs new can be A/B tested.
+    {"id": "sa-base",              "label": "SA (baseline)",      "kband": -1, "stages": _stages_sa()},
+    {"id": "ils-base",             "label": "ILS (baseline)",     "kband": -1, "stages": _stages_ils()},
+    {"id": "staged-base",          "label": "Staged (baseline)",  "kband": -1, "stages": _stages_staged("lns")},
+    {"id": "staged-adaptive-base", "label": "Staged-Adap. (base)","kband": -1, "stages": _stages_staged("lns-adaptive")},
+]
+METHOD_BY_ID = {m["id"]: m for m in METHODS}
 
 
-def run_staged(gpath, total_min, p1_frac, seed, out_dir,
-               lns_frac, nh_size, nh_cands, suffix="", adaptive=False):
-    lns_min = total_min * lns_frac
-    sa_min  = total_min - lns_min
-    lns_mode = "lns-adaptive" if adaptive else "lns"
-
-    lns_out = out_dir / f"staged_lns{suffix}.json"
-    lns_log = out_dir / f"staged_lns{suffix}.log"
-    cmd_lns = [str(APPROACH1), "-i", str(gpath), "-o", str(lns_out),
-               "-t", mins(lns_min), "-p1", mins(lns_min * p1_frac),
-               "--mode", lns_mode,
-               "--nh-size", str(nh_size), "--nh-cands", str(nh_cands),
-               "-s", str(seed)]
-    rc1, sec1 = _run(cmd_lns, lns_log)
-
-    sa_input = lns_out if lns_out.exists() else gpath
-    out     = out_dir / f"staged{suffix}.json"
-    sa_log  = out_dir / f"staged_sa{suffix}.log"
-    cmd_sa  = [str(SAKGD), "-i", str(sa_input), "-o", str(out),
-               "-t", mins(sa_min), "-p1", mins(sa_min * p1_frac),
-               "-s", str(seed)]
-    rc2, sec2 = _run(cmd_sa, sa_log)
-    rc = rc1 if rc1 != 0 else rc2
-    return out, rc, sec1 + sec2, lns_log, sa_log
+def _resolve_fracs(spec, lns_frac):
+    """Map each stage's symbolic frac to an absolute fraction of the budget."""
+    fr = []
+    for st in spec["stages"]:
+        kind = st.get("frac", "full")
+        fr.append(1.0 if kind == "full" else lns_frac if kind == "lns" else None)
+    used = sum(x for x in fr if x is not None)
+    return [(1.0 - used) if x is None else x for x in fr]
 
 
-def run_ils(gpath, total_min, p1_frac, seed, out_dir, ils_perturb, suffix=""):
-    out = out_dir / f"ils{suffix}.json"
-    log = out_dir / f"ils{suffix}.log"
-    cmd = [str(APPROACH1), "-i", str(gpath), "-o", str(out),
-           "-t", mins(total_min), "-p1", mins(total_min * p1_frac),
-           "--mode", "ils", "-s", str(seed)]
-    if ils_perturb > 0:
-        cmd += ["--ils-perturb", str(ils_perturb)]
-    rc, sec = _run(cmd, log)
-    return out, rc, sec, log, log
+def _stage_files(spec, idx, out_dir, suffix):
+    """(out_path, log_path) for stage idx, preserving legacy naming.
+
+    Single-stage method X      -> X{suffix}.json / X{suffix}.log
+    Multi-stage, non-final     -> X_{tag}{suffix}.json / X_{tag}{suffix}.log
+    Multi-stage, final stage   -> X{suffix}.json (layout) / X_{tag}{suffix}.log
+    """
+    stages  = spec["stages"]
+    multi   = len(stages) > 1
+    is_last = idx == len(stages) - 1
+    base    = spec["id"]
+    if not multi:
+        return out_dir / f"{base}{suffix}.json", out_dir / f"{base}{suffix}.log"
+    tag = stages[idx].get("tag", f"s{idx}")
+    out = out_dir / (f"{base}{suffix}.json" if is_last else f"{base}_{tag}{suffix}.json")
+    log = out_dir / f"{base}_{tag}{suffix}.log"
+    return out, log
+
+
+def live_log_name(spec, suffix="_w0"):
+    """File name of the log to watch for live status (final stage)."""
+    return _stage_files(spec, len(spec["stages"]) - 1, Path("."), suffix)[1].name
+
+
+def run_method(spec, gpath, total_min, p1_frac, seed, out_dir, suffix,
+               nh_size, nh_cands, ils_perturb, lns_frac):
+    """Generic stage runner. Returns (out_path, rc, wall_sec, first_log, final_log)."""
+    fracs    = _resolve_fracs(spec, lns_frac)
+    kband    = spec.get("kband", 2)
+    prev_out = None
+    logs     = []
+    rc_final = 0
+    sec_total = 0.0
+    for idx, st in enumerate(spec["stages"]):
+        stage_min = total_min * fracs[idx]
+        inp = (prev_out if (st.get("warm") and prev_out and Path(prev_out).exists())
+               else gpath)
+        binpath  = SAKGD if st["bin"] == "sakgd" else APPROACH1
+        out, log = _stage_files(spec, idx, out_dir, suffix)
+        trace    = log.with_suffix(".trace")
+        cmd = [str(binpath), "-i", str(inp), "-o", str(out),
+               "-t", mins(stage_min), "-p1", mins(stage_min * p1_frac),
+               "-s", str(seed), "--trace-file", str(trace)]
+        mode = st.get("mode")
+        if mode:
+            cmd += ["--mode", mode]
+        if mode in ("lns", "lns-adaptive"):
+            cmd += ["--nh-size", str(nh_size), "--nh-cands", str(nh_cands)]
+        if mode == "ils" and ils_perturb > 0:
+            cmd += ["--ils-perturb", str(ils_perturb)]
+        if kband != 2:
+            cmd += ["--kband", str(kband)]
+        rc, sec = _run(cmd, log)
+        if rc_final == 0:
+            rc_final = rc
+        sec_total += sec
+        logs.append(log)
+        prev_out = out
+    return prev_out, rc_final, sec_total, logs[0], logs[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -210,20 +425,9 @@ def run_combo(method, gpath, total_min, p1_frac, base_seed,
         suffix = f"_w{wid}"
         inp    = gpath_warm if (gpath_warm and Path(gpath_warm).exists()) else gpath
         t0     = time.time()
-        if method == "sa":
-            out, rc, sec, flog, glog = run_sa(
-                inp, total_min, p1_frac, seed, out_dir, suffix)
-        elif method == "staged":
-            out, rc, sec, flog, glog = run_staged(
-                inp, total_min, p1_frac, seed, out_dir,
-                lns_frac, nh_size, nh_cands, suffix, adaptive=False)
-        elif method == "staged-adaptive":
-            out, rc, sec, flog, glog = run_staged(
-                inp, total_min, p1_frac, seed, out_dir,
-                lns_frac, nh_size, nh_cands, suffix, adaptive=True)
-        else:  # ils
-            out, rc, sec, flog, glog = run_ils(
-                inp, total_min, p1_frac, seed, out_dir, ils_perturb, suffix)
+        out, rc, sec, flog, glog = run_method(
+            METHOD_BY_ID[method], inp, total_min, p1_frac, seed, out_dir, suffix,
+            nh_size, nh_cands, ils_perturb, lns_frac)
 
         first  = parse_log(flog)
         final  = parse_log(glog)
@@ -377,18 +581,22 @@ def scan_live_status(run_dir: Path, methods: list) -> dict:
     result = {}
     if not run_dir or not run_dir.exists():
         return result
-    for gdir in sorted(run_dir.iterdir(),
-                       key=lambda p: int(re.search(r"\d+", p.name).group() or 0)):
-        if not gdir.is_dir():
-            continue
+    def _gnum(p):
+        m = re.search(r"\d+", p.name)
+        return int(m.group()) if m else 0
+    # Filter to per-graph directories first; the run dir also holds digit-less
+    # summary files (summary.md/csv, detailed.json) the sort key must not see.
+    gdirs = [p for p in run_dir.iterdir() if p.is_dir()]
+    for gdir in sorted(gdirs, key=_gnum):
         gname = gdir.name
         for method in methods:
-            if method in ("staged", "staged-adaptive"):
-                log = gdir / "staged_sa_w0.log"
-                if not log.exists():
-                    log = gdir / "staged_lns_w0.log"
-            else:
-                log = gdir / f"{method}_w0.log"
+            spec = METHOD_BY_ID.get(method)
+            if spec is None:
+                continue
+            log = gdir / live_log_name(spec)
+            if not log.exists() and len(spec["stages"]) > 1:
+                # Final stage hasn't started yet; fall back to the first stage.
+                log = gdir / _stage_files(spec, 0, Path("."), "_w0")[1].name
             result[(gname, method)] = _parse_live_log(log)
     return result
 
@@ -507,6 +715,24 @@ def generate_report(out_root, history, bests, methods_order=None, live_status=No
         methods = sorted(all_methods)
 
     graphs = sorted(all_graphs, key=lambda s: (len(s), s))
+
+    # ── per-run convergence data (k / totalX over time, best of all workers) ──
+    # Embedded as JSON keyed by run id and rendered lazily inside each Run
+    # History entry when it is expanded (see RUN_TS / buildRunCharts in the JS).
+    # Capped to the most recent runs to keep the page light.
+    run_ts_data = {}
+    for run in list(reversed(history.get("runs", [])))[:RUN_TS_LIMIT]:
+        rid = run.get("id")
+        if not rid:
+            continue
+        ts = collect_run_timeseries(
+            out_root, rid, run.get("graphs", []), run.get("methods", []),
+            run.get("workers", 1))
+        if ts:
+            run_ts_data[rid] = ts
+    run_ts_json = json.dumps(run_ts_data)
+    method_colors_json = json.dumps(METHOD_COLORS)
+    default_colors_json = json.dumps(DEFAULT_COLORS)
 
     baseline_data = [baseline_by_graph.get(g) for g in graphs]
     method_data   = {m: [best_results.get((g, m), {}).get("k") for g in graphs]
@@ -689,12 +915,16 @@ def generate_report(out_root, history, bests, methods_order=None, live_status=No
         mm_s      = f" &nbsp;·&nbsp; budget [{', '.join(mm_parts)}]" if mm_parts else ""
         rc_seeds  = run["combos"][0].get("seeds", []) if run.get("combos") else []
         seed_s    = f" &nbsp;·&nbsp; seed {rc_seeds[0]}" if rc_seeds else ""
-        history_html_parts.append(f"""<details>
-          <summary>Run {run.get('id','?')} &nbsp;|&nbsp; {run.get('timestamp','?')}
+        _rname = run.get('name') or ''
+        _rname_s = (f"<strong style='color:#4361ee'>{_rname}</strong> &nbsp;·&nbsp; "
+                    if _rname else "")
+        history_html_parts.append(f"""<details data-run="{run.get('id','')}">
+          <summary>{_rname_s}Run {run.get('id','?')} &nbsp;|&nbsp; {run.get('timestamp','?')}
             &nbsp;|&nbsp; workers={n_workers} &nbsp;|&nbsp;
             methods=[{', '.join(run.get('methods',[]))}]{mm_s}{seed_s}
             &nbsp;|&nbsp; {n_combos} combos</summary>
           {inner}
+          <div class="run-charts" style="margin-top:10px"></div>
         </details>""")
 
     history_html = "\n".join(history_html_parts)
@@ -877,6 +1107,16 @@ def generate_report(out_root, history, bests, methods_order=None, live_status=No
 
   /* ── tables ── */
   table {{ width:100%; border-collapse:collapse; font-size:.82rem; }}
+  /* Best Results can have many method columns — scroll instead of overflowing,
+     and keep the Graph column pinned while scrolling. */
+  .tbl-scroll {{ overflow-x:auto; }}
+  .tbl-best {{ font-size:.76rem; min-width:max-content; }}
+  .tbl-best th, .tbl-best td {{ padding:6px 10px; }}
+  .tbl-best td:first-child, .tbl-best th:first-child {{
+    position:sticky; left:0; z-index:2; background:var(--card);
+  }}
+  tbody tr:nth-child(even) .tbl-best td:first-child,
+  .tbl-best tbody tr:nth-child(even) td:first-child {{ background:var(--row-alt); }}
   th,td {{ padding:9px 14px; text-align:right; border-bottom:1px solid var(--border); }}
   th {{
     background:var(--th-bg); color:var(--muted); text-align:center;
@@ -973,14 +1213,16 @@ def generate_report(out_root, history, bests, methods_order=None, live_status=No
 {live_html}
 <!-- LIVE_STATUS_END -->
 <h2>Best Results (All Runs)</h2>
-<div class="card">
-<table>
+<div class="card" style="padding:8px">
+<div class="tbl-scroll">
+<table class="tbl-best">
   <thead>
     <tr><th>Graph</th><th>Nodes</th><th>Edges</th><th>Baseline k</th>{mh}</tr>
     <tr><th colspan="4"></th>{ms}</tr>
   </thead>
   <tbody>{"".join(tbody)}</tbody>
 </table>
+</div>
 </div>
 
 {method_summary_html}
@@ -991,7 +1233,7 @@ def generate_report(out_root, history, bests, methods_order=None, live_status=No
   <div class="card"><canvas id="improvChart"></canvas></div>
 </div>
 
-<h2>Run History</h2>
+<h2>Run History <small style="font-weight:400;color:#888">— expand a run for its k / total-crossings convergence (best of all workers)</small></h2>
 {history_html}
 
 <script>
@@ -1021,6 +1263,45 @@ new Chart(document.getElementById('improvChart'), {{
           title:{{display:true,text:'% improvement',color:'#444'}}}}
     }}
   }}
+}});
+
+// ── per-run convergence (lazy-rendered when a Run History entry is expanded) ──
+const RUN_TS  = {run_ts_json};
+const MCOLORS = {method_colors_json};
+const DCOLORS = {default_colors_json};
+function _colorFor(m,i){{ return MCOLORS[m] || DCOLORS[i % DCOLORS.length]; }}
+function _mkLine(cid, datasets, title, ylabel){{
+  const el = document.getElementById(cid); if(!el) return;
+  new Chart(el,{{type:'line',data:{{datasets:datasets}},options:{{responsive:true,animation:false,
+    interaction:{{mode:'nearest',intersect:false}},
+    plugins:{{legend:{{labels:{{color:'#333',boxWidth:12,font:{{size:10}}}}}},
+             title:{{display:true,text:title,color:'#444'}}}},
+    scales:{{x:{{type:'linear',title:{{display:true,text:'seconds',color:'#444'}},ticks:{{color:'#444'}},grid:{{color:'#eee'}}}},
+            y:{{title:{{display:true,text:ylabel,color:'#444'}},ticks:{{color:'#444'}},grid:{{color:'#eee'}}}}}}}}}});
+}}
+function _buildRunCharts(runId, c){{
+  if(!c || c.dataset.built) return;
+  c.dataset.built='1';
+  const data = RUN_TS[runId];
+  if(!data){{ c.innerHTML='<div style="color:#888;font-size:.78rem;padding:6px">No convergence data for this run.</div>'; return; }}
+  const gs = Object.keys(data).sort((a,b)=> a.length-b.length || a.localeCompare(b));
+  let h='<div style="font-size:.7rem;color:#888;margin:4px 0">k over time</div><div class="charts">';
+  gs.forEach((g,i)=>{{ h+='<div class="card"><canvas id="rc_'+runId+'_'+i+'_k"></canvas></div>'; }});
+  h+='</div><div style="font-size:.7rem;color:#888;margin:8px 0 4px">total crossings over time</div><div class="charts">';
+  gs.forEach((g,i)=>{{ h+='<div class="card"><canvas id="rc_'+runId+'_'+i+'_x"></canvas></div>'; }});
+  c.innerHTML = h+'</div>';
+  gs.forEach((g,i)=>{{
+    const ms = Object.keys(data[g]);
+    const mk = vi => ms.map((m,mi)=>({{label:m.toUpperCase(),
+      data:data[g][m].map(p=>({{x:p[0],y:p[vi]}})),
+      borderColor:_colorFor(m,mi),backgroundColor:_colorFor(m,mi)+'33',
+      borderWidth:2,pointRadius:1,tension:0.15}}));
+    _mkLine('rc_'+runId+'_'+i+'_k', mk(1), g, 'k');
+    _mkLine('rc_'+runId+'_'+i+'_x', mk(2), g, 'totalX');
+  }});
+}}
+document.querySelectorAll('details[data-run]').forEach(d=>{{
+  d.addEventListener('toggle', ()=>{{ if(d.open) _buildRunCharts(d.dataset.run, d.querySelector('.run-charts')); }});
 }});
 (function(){{
   const START_MS      = {start_ts_ms};
@@ -1131,6 +1412,8 @@ def main():
     ap.add_argument("--ils-perturb",     type=int,   default=0)
     ap.add_argument("--seed",            type=int,   default=42)
     ap.add_argument("--out-dir",         default="results")
+    ap.add_argument("--run-name",        default="",
+                    help="optional human label shown in the report/history")
     ap.add_argument("--warm-start",      action="store_true")
     ap.add_argument("--report-only",     action="store_true")
     args = ap.parse_args()
@@ -1152,7 +1435,7 @@ def main():
         return
 
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
-    valid_m = {"sa", "staged", "ils", "staged-adaptive"}
+    valid_m = set(METHOD_BY_ID)
     for m in methods:
         if m not in valid_m:
             sys.exit(f"Unknown method '{m}'. Choose from: {', '.join(sorted(valid_m))}")
@@ -1162,6 +1445,7 @@ def main():
     generate_report(out_root, history, bests)
 
     run_id    = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name  = args.run_name.strip()
     run_dir   = out_root / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1289,6 +1573,7 @@ def main():
             if not found:
                 _h["runs"].append({
                     "id":          run_id,
+                    "name":        run_name,
                     "timestamp":   datetime.now().isoformat(timespec="seconds"),
                     "methods":     methods,
                     "workers":     args.workers,
@@ -1310,6 +1595,7 @@ def main():
     # Detailed JSON log.
     detail = {
         "run_id":    run_id,
+        "name":      run_name,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "config": {
             "methods":       methods,

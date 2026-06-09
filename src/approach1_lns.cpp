@@ -583,6 +583,9 @@ public:
     string                          statusFile;
     string                          statusId   = "run";
     double                          statusInterval = 1.0;
+    // Convergence trace: "<absSec> <bestK> <bestX>" every statusInterval s,
+    // absSec from runStartedAt (shared across phases/modes in this process).
+    string                          traceFile;
     int                             curPhase   = 0;
     double                          curInitT   = 0;
     double                          curTempLim = 0;
@@ -892,6 +895,18 @@ public:
     }
 
     // ----- live status -------------------------------------------------
+    void appendTrace() {
+        if (traceFile.empty()) return;
+        double absSec = duration_cast<duration<double>>(
+            steady_clock::now() - runStartedAt).count();
+        int bk = (bestK == INT_MAX) ? kVal   : bestK;
+        ll  bx = (bestK == INT_MAX) ? totalX : bestX;
+        ofstream f(traceFile, std::ios::app);
+        if (!f) return;
+        f.setf(std::ios::fixed); f.precision(2);
+        f << absSec << ' ' << bk << ' ' << bx << '\n';
+    }
+
     void writeStatus(double currentTemp, ll moves, ll accepts, const char* state) {
         if (statusFile.empty()) return;
         string tmp = statusFile + ".tmp";
@@ -1241,6 +1256,7 @@ public:
                 double el = elapsed();
                 if (el >= nextStatus) {
                     writeStatus(currentTemp, moves, accepts, "running");
+                    appendTrace();
                     nextStatus = el + statusInterval;
                 }
                 if (el >= nextReport) {
@@ -1453,6 +1469,7 @@ public:
             double el = elapsed();
             if (el >= nextStatus) {
                 writeStatus(T, iters, improves, "running");
+                appendTrace();
                 nextStatus = el + statusInterval;
             }
             if (el >= nextReport) {
@@ -1600,6 +1617,7 @@ int main(int argc, char** argv) {
     long long seed   = -1;
     bool verifyOnly  = false;
     string statusFile, statusId = "run";
+    string traceFile;
     double statusInterval = 1.0;
     string mode = "sa";
     int lnsNhSize  = 0;
@@ -1621,6 +1639,7 @@ int main(int argc, char** argv) {
         else if (a == "--status-file")       statusFile = need("--status-file");
         else if (a == "--status-id")         statusId   = need("--status-id");
         else if (a == "--status-interval")   statusInterval = atof(need("--status-interval"));
+        else if (a == "--trace-file")        traceFile  = need("--trace-file");
         else if (a == "--verify")            verifyOnly = true;
         else if (a == "--mode")              mode       = need("--mode");
         else if (a == "--nh-size")           lnsNhSize  = atoi(need("--nh-size"));
@@ -1649,8 +1668,10 @@ int main(int argc, char** argv) {
     solver.statusFile     = statusFile;
     solver.statusId       = statusId;
     solver.statusInterval = max(0.05, statusInterval);
+    solver.traceFile      = traceFile;
     solver.kBand          = kbandArg;
     solver.runStartedAt   = steady_clock::now();
+    if (!traceFile.empty()) ofstream(traceFile, std::ios::trunc);  // start clean
     solver.setup(g);
     int veInit = solver.findVertexEdgeOverlapFast();
     cerr << "Initial: k=" << solver.kVal

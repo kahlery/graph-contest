@@ -586,6 +586,11 @@ public:
     string                          statusFile;
     string                          statusId   = "run";
     double                          statusInterval = 1.0;   // seconds
+
+    // Convergence trace (optional): append "<absSec> <bestK> <bestX>" every
+    // statusInterval seconds so the report can plot k/totalX over time. absSec
+    // is measured from runStartedAt, so phase 1 and phase 2 share one timeline.
+    string                          traceFile;
     int                             curPhase   = 0;
     double                          curInitT   = 0;
     double                          curTempLim = 0;
@@ -934,6 +939,19 @@ public:
     }
 
     // ----- live status JSON ------------------------------------------
+    // Append one convergence sample (best-so-far) on the absolute timeline.
+    void appendTrace() {
+        if (traceFile.empty()) return;
+        double absSec = duration_cast<duration<double>>(
+            steady_clock::now() - runStartedAt).count();
+        int bk = (bestK == INT_MAX) ? kVal   : bestK;   // best-so-far (fallback: current)
+        ll  bx = (bestK == INT_MAX) ? totalX : bestX;
+        ofstream f(traceFile, std::ios::app);
+        if (!f) return;
+        f.setf(std::ios::fixed); f.precision(2);
+        f << absSec << ' ' << bk << ' ' << bx << '\n';
+    }
+
     void writeStatus(double currentTemp, ll moves, ll accepts, const char* state) {
         if (statusFile.empty()) return;
         string tmp = statusFile + ".tmp";
@@ -1326,6 +1344,7 @@ public:
                 double el = elapsed();
                 if (el >= nextStatus) {
                     writeStatus(currentTemp, moves, accepts, "running");
+                    appendTrace();
                     nextStatus = el + statusInterval;
                 }
                 if (el >= nextReport) {
@@ -1376,6 +1395,7 @@ int main(int argc, char** argv) {
     long long seed   = -1;
     bool verifyOnly  = false;
     string statusFile, statusId = "run";
+    string traceFile;
     double statusInterval = 1.0;
     int    kbandArg  = 2;     // phase-2 k-critical selection band
 
@@ -1394,6 +1414,7 @@ int main(int argc, char** argv) {
         else if (a == "--status-file")       statusFile = need("--status-file");
         else if (a == "--status-id")         statusId   = need("--status-id");
         else if (a == "--status-interval")   statusInterval = atof(need("--status-interval"));
+        else if (a == "--trace-file")        traceFile  = need("--trace-file");
         else if (a == "--verify")            verifyOnly = true;
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         else if (inputFile.empty())  inputFile  = a;
@@ -1413,8 +1434,10 @@ int main(int argc, char** argv) {
     solver.statusFile     = statusFile;
     solver.statusId       = statusId;
     solver.statusInterval = max(0.05, statusInterval);
+    solver.traceFile      = traceFile;
     solver.kBand          = kbandArg;
     solver.runStartedAt   = steady_clock::now();
+    if (!traceFile.empty()) ofstream(traceFile, std::ios::trunc);  // start clean
     solver.setup(g);
     int veInit = solver.findVertexEdgeOverlapFast();
     cerr << "Initial: k=" << solver.kVal

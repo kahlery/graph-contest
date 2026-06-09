@@ -183,31 +183,29 @@ def render(run_dir: Path, run_start: datetime):
         key=lambda p: int(re.search(r"\d+", p.name).group() or 0)
     )
 
-    # --- detect methods from log files ---
-    method_set = set()
-    for gd in graph_dirs:
-        for f in gd.glob("*.log"):
-            n = f.stem  # e.g. sa_w0, ils_w0, staged_lns_w0, staged_sa_w0
-            if n.startswith("sa_"):             method_set.add("sa")
-            if n.startswith("ils_"):            method_set.add("ils")
-            if n.startswith("staged_lns"):      method_set.add("staged")
-            if n.startswith("staged-adaptive"): method_set.add("staged-adaptive")
-    methods = [m for m in ["sa", "staged", "staged-adaptive", "ils"] if m in method_set]
-    if not methods:
-        methods = ["sa", "ils"]
+    # --- detect methods + their live log from the run_contest registry ---
+    # (single source of truth: new methods auto-appear with no edit here.)
+    from run_contest import METHODS, live_log_name, _stage_files
 
-    # --- parse every log ---
-    # staged: use staged_sa_w0.log if it exists, else staged_lns_w0.log
+    def _stage_logs(spec):
+        return [_stage_files(spec, i, Path("."), "_w0")[1].name
+                for i in range(len(spec["stages"]))]
+
+    present = [spec for spec in METHODS
+               if any((gd / nm).exists()
+                      for gd in graph_dirs for nm in _stage_logs(spec))]
+    if not present:
+        present = [m for m in METHODS if m["id"] in ("sa", "ils")]
+    methods = [spec["id"] for spec in present]
+
+    # --- parse every log (final stage; fall back to the first stage) ---
     grid = {}
     for gd in graph_dirs:
-        for method in methods:
-            if method in ("staged", "staged-adaptive"):
-                log = gd / "staged_sa_w0.log"
-                if not log.exists():
-                    log = gd / "staged_lns_w0.log"
-            else:
-                log = gd / f"{method}_w0.log"
-            grid[(gd.name, method)] = parse_log(log)
+        for spec in present:
+            log = gd / live_log_name(spec)
+            if not log.exists() and len(spec["stages"]) > 1:
+                log = gd / _stage_files(spec, 0, Path("."), "_w0")[1].name
+            grid[(gd.name, spec["id"])] = parse_log(log)
 
     n_combos  = len(graph_dirs) * len(methods)
     done_cnt  = sum(1 for s in grid.values() if is_done(s))

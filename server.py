@@ -35,6 +35,7 @@ _proc        = None
 _loop_stop   = threading.Event()
 _loop_thread = None
 _config = {
+    "run_name":       "",
     "methods":        "sa,ils",
     "graphs":         "1-9",
     "minutes_small":  1.0,
@@ -76,6 +77,8 @@ def _build_cmd():
     ]
     if _config.get("warm_start"):
         cmd.append("--warm-start")
+    if str(_config.get("run_name", "")).strip():
+        cmd += ["--run-name", str(_config["run_name"]).strip()]
     return cmd
 
 
@@ -121,6 +124,15 @@ def api_status():
         "run_start_ms": start_ms,
         "config":       _config,
     }
+
+
+def api_methods():
+    """Method registry for the control panel — derived from run_contest.METHODS.
+    Adding a method there makes it appear here (and as a checkbox) automatically."""
+    from run_contest import METHODS
+    default_ids = {m.strip() for m in _config["methods"].split(",") if m.strip()}
+    return [{"id": m["id"], "label": m["label"], "default": m["id"] in default_ids}
+            for m in METHODS]
 
 
 def api_live():
@@ -263,13 +275,15 @@ _CTRL_PANEL = """
   </div>
 
   <div class="cfg-section">
+    <div class="cfg-label">Run name <span style="font-weight:400;color:#888">(optional)</span></div>
+    <input id="cfg-run-name" type="text" placeholder="e.g. kband A/B, baseline sweep…"
+           style="width:100%;box-sizing:border-box">
+  </div>
+
+  <div class="cfg-section">
     <div class="cfg-label">Methods</div>
-    <div class="method-grid">
-      <label class="method-chk"><input type="checkbox" id="m-sa"       checked><span>SA</span></label>
-      <label class="method-chk"><input type="checkbox" id="m-ils"      checked><span>ILS</span></label>
-      <label class="method-chk"><input type="checkbox" id="m-staged">          <span>Staged</span></label>
-      <label class="method-chk"><input type="checkbox" id="m-staged-adaptive"><span>Staged-Adap.</span></label>
-    </div>
+    <!-- Checkboxes are rendered from /api/methods (run_contest.METHODS). -->
+    <div class="method-grid" id="method-boxes"></div>
   </div>
 
   <div class="cfg-section">
@@ -335,7 +349,25 @@ _CTRL_JS = r"""
   const POLL_MS = 5000;
   let pollTimer, _firstPoll = true;
 
-  const METHOD_IDS = ['sa', 'ils', 'staged', 'staged-adaptive'];
+  // Populated from /api/methods on load (source of truth: run_contest.METHODS).
+  let METHOD_IDS = [];
+
+  function renderMethodBoxes(list) {
+    METHOD_IDS = list.map(m => m.id);
+    const box = document.getElementById('method-boxes');
+    if (!box) return;
+    box.innerHTML = list.map(m =>
+      `<label class="method-chk"><input type="checkbox" id="m-${m.id}"`
+      + `${m.default ? ' checked' : ''}><span>${m.label}</span></label>`
+    ).join('');
+  }
+
+  async function loadMethods() {
+    try {
+      const r = await fetch('/api/methods');
+      renderMethodBoxes(await r.json());
+    } catch (e) { console.warn('methods load failed', e); }
+  }
 
   // ── config helpers ─────────────────────────────────────────────────────────
   function readCfg() {
@@ -344,6 +376,7 @@ _CTRL_JS = r"""
     ).join(',');
     return {
       methods,
+      run_name:       document.getElementById('cfg-run-name').value.trim(),
       graphs:         document.getElementById('cfg-graphs').value.trim(),
       minutes_small:  parseFloat(document.getElementById('cfg-small').value),
       minutes_medium: parseFloat(document.getElementById('cfg-medium').value),
@@ -358,6 +391,7 @@ _CTRL_JS = r"""
 
   function syncCfg(c) {
     if (!c) return;
+    if (c.run_name != null) document.getElementById('cfg-run-name').value = c.run_name;
     if (c.methods != null) {
       const active = c.methods.split(',').map(s => s.trim());
       METHOD_IDS.forEach(m => {
@@ -656,7 +690,8 @@ _CTRL_JS = r"""
     clearTimeout(pollTimer); poll();
   };
 
-  poll();
+  // Render method checkboxes first (so the first syncCfg can tick them), then poll.
+  (async () => { await loadMethods(); poll(); })();
 })();
 """
 
@@ -688,6 +723,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_page()
         elif path == "/api/status":
             self._json(api_status())
+        elif path == "/api/methods":
+            self._json(api_methods())
         elif path == "/api/live":
             self._json(api_live())
         else:
