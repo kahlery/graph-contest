@@ -572,8 +572,9 @@ public:
 
     Grid grid;
 
-    // Vertex spatial grid (shares the edge grid's cell geometry). Built and
-    // used only during the initial-layout repair. Not maintained during SA.
+    // Vertex spatial grid (shares the edge grid's cell geometry). Kept in
+    // sync during SA/LNS/ILS via vGridMove in commitMove; rebuilt in
+    // restoreBest/repairLayout.
     vector<vector<int>> vCells;
 
     int        bestK = INT_MAX;
@@ -611,6 +612,76 @@ public:
                  (uint64_t)(uintptr_t)this);
     }
 
+    // Initial-layout mode: "auto" (sample both, keep the sparser),
+    // "input" (always repair the given drawing), "bfs" (always snake).
+    string initMode = "auto";
+
+    // Estimate the average crossings per edge of the CURRENT pos by counting
+    // exactly for S sampled edges (O(S*m), no grid needed). Used only to
+    // choose the initial layout, so sampling noise is fine.
+    double estimateAvgCross(int S) {
+        if (m <= 1) return 0.0;
+        S = min(S, m);
+        mt19937_64 r(0xABCDEF12345ull);
+        double sum = 0.0;
+        for (int s = 0; s < S; s++) {
+            int i = (S == m) ? s : (int)(r() % (uint64_t)m);
+            const Pt& a = pos[edges[i].u];
+            const Pt& b = pos[edges[i].v];
+            int c = 0;
+            for (int e = 0; e < m; e++) {
+                if (e == i || sharesNode(i, e)) continue;
+                const Pt& p = pos[edges[e].u];
+                const Pt& q = pos[edges[e].v];
+                if (!bboxOverlap(a, b, p, q)) continue;
+                if (segCross(a, b, p, q)) c++;
+            }
+            sum += c;
+        }
+        return sum / S;
+    }
+
+    // Constructive initial layout: BFS order (all components) laid out along
+    // a boustrophedon ("snake") path over a near-uniform grid covering the
+    // canvas, with per-cell jitter to break the collinearity of exact grid
+    // points. Graph-close vertices land geometrically close, so edges stay
+    // short and crossings local — a far better start than a tangled
+    // structured drawing.
+    void bfsSnakeLayout() {
+        vector<int> order;
+        order.reserve(n);
+        vector<char> seen(n, 0);
+        vector<int> q;
+        q.reserve(n);
+        for (int s = 0; s < n; s++) {
+            if (seen[s]) continue;
+            seen[s] = 1;
+            q.clear();
+            q.push_back(s);
+            for (size_t qi = 0; qi < q.size(); qi++) {
+                int u = q[qi];
+                order.push_back(u);
+                for (int e : nodeEdges[u]) {
+                    int w = (edges[e].u == u) ? edges[e].v : edges[e].u;
+                    if (!seen[w]) { seen[w] = 1; q.push_back(w); }
+                }
+            }
+        }
+        ll cols = max<ll>(2, (ll)llround(ceil(
+            sqrt((double)n * (double)max<ll>(1, W) / (double)max<ll>(1, H)))));
+        ll rows = max<ll>(2, (n + cols - 1) / cols);
+        ll dx = max<ll>(1, W / (cols - 1));
+        ll dy = max<ll>(1, H / (rows - 1));
+        mt19937_64 jr(0x5EEDB0B5ull);
+        for (size_t idx = 0; idx < order.size(); idx++) {
+            ll row = (ll)idx / cols, col = (ll)idx % cols;
+            if (row & 1) col = cols - 1 - col;
+            ll x = min(W, col * dx + (dx > 1 ? (ll)(jr() % (uint64_t)dx) : 0));
+            ll y = min(H, row * dy + (dy > 1 ? (ll)(jr() % (uint64_t)dy) : 0));
+            pos[order[idx]] = {ox + x, oy + y};
+        }
+    }
+
     // ----- setup -------------------------------------------------------
     void setup(const GraphData& g) {
         n         = g.n;
@@ -627,6 +698,25 @@ public:
             nodeEdges[edges[i].v].push_back(i);
         }
 
+        // Optional constructive initial layout. The given drawing can be
+        // catastrophically tangled (Automatic-8: ~45M crossings, k≈10000 —
+        // far beyond what local moves can untangle in any realistic budget,
+        // and computeAllCrossings alone takes minutes on it). In auto mode,
+        // sample-estimate the crossing density of the input layout and of a
+        // BFS snake layout, and keep whichever is clearly sparser.
+        if (initMode != "input" && n > 1) {
+            double inAvg = estimateAvgCross(300);
+            vector<Pt> inputPos = pos;
+            bfsSnakeLayout();
+            double snAvg = estimateAvgCross(300);
+            bool useSnake = (initMode == "bfs") || snAvg < 0.8 * inAvg;
+            if (!useSnake) pos = inputPos;
+            cerr << "init: avg crossings/edge  input≈" << inAvg
+                 << "  bfs-snake≈" << snAvg
+                 << "  -> using " << (useSnake ? "bfs-snake" : "input")
+                 << " layout\n";
+        }
+
         int gridSide = max(8, min(256, (int)round(sqrt((double)max(m, 1)) / 1.5)));
         grid.init(ox, oy, W, H, gridSide, m);
         for (int i = 0; i < m; i++)
@@ -639,6 +729,8 @@ public:
         syncEdgeGrid();
         bool ok = repairLayout();
         for (int attempt = 0; attempt < 12 && !ok; attempt++) {
+            cerr << "setup: in-place repair failed -> scatter fallback"
+                    " (attempt " << attempt + 1 << "/12)\n";
             scatterPositions(0x9E3779B97F4A7C15ull * (uint64_t)(attempt + 1));
             ok = repairLayout();
         }
@@ -986,20 +1078,30 @@ public:
             }
         } else {
             // k-critical weighting: only edges within `selKBand` of kVal count,
-            // with quadratic emphasis on proximity to kVal. A small flat base
-            // (0.1) keeps a little probability on non-critical vertices so the
-            // search can still relocate neighbours to make room.
+            // with quadratic emphasis on proximity to kVal. Non-critical
+            // vertices share a flat base mass sized relative to the critical
+            // mass (base*n = critSum/3, i.e. ~25% of the total), so the bias
+            // stays hard regardless of n while room-making moves on neighbours
+            // remain possible. A fixed base (0.1) would swamp the critical
+            // mass on large graphs (0.1*n >> critSum) and degrade the
+            // selection to near-uniform exactly where k matters most.
             int thr = kVal - selKBand;
             if (thr < 1) thr = 1;
+            double critSum = 0.0;
             for (int i = 0; i < n; i++) {
-                double w = 0.1;
+                double w = 0.0;
                 for (int e : nodeEdges[i]) {
                     if (xc[e] >= thr) {
                         double d = (double)(xc[e] - thr + 1);
                         w += d * d;
                     }
                 }
-                t += w;
+                cum[i]   = w;
+                critSum += w;
+            }
+            double base = (critSum > 0.0) ? critSum / (3.0 * n) : 1.0;
+            for (int i = 0; i < n; i++) {
+                t += cum[i] + base;
                 cum[i] = t;
             }
         }
@@ -1009,10 +1111,11 @@ public:
     }
 
     int selectNode() {
-        // In k-critical mode the band depends on kVal, so resync whenever kVal
-        // moves (rare in phase 2) in addition to the periodic staleness refresh.
+        // In k-critical mode the band depends on kVal, so resync when kVal
+        // moves — rate-limited via cumStaleCnt so an oscillating kVal cannot
+        // trigger a full O(n+m) rebuild every few moves.
         if (cumStaleCnt > max(64, n / 4) ||
-            (selKBand >= 0 && kVal != lastCumK)) rebuildCum();
+            (selKBand >= 0 && kVal != lastCumK && cumStaleCnt >= 8)) rebuildCum();
         if (totalNodeW <= 0)
             return uniform_int_distribution<int>(0, n - 1)(rng);
         double r = uniform_real_distribution<double>(0.0, totalNodeW)(rng);
@@ -1607,7 +1710,8 @@ static void printUsage(const char* prog) {
         "  --mode ils            Run Iterated Local Search (SA + random kicks)\n"
         "  --nh-size K           LNS neighbourhood size   (default: n/10, min 3)\n"
         "  --nh-cands R          LNS candidates per node  (default: 50)\n"
-        "  --ils-perturb P       ILS kick size            (default: n/10, min 3)\n";
+        "  --ils-perturb P       ILS kick size            (default: n/10, min 3)\n"
+        "  --init MODE           initial layout: auto|input|bfs (default: auto)\n";
 }
 
 int main(int argc, char** argv) {
@@ -1624,6 +1728,7 @@ int main(int argc, char** argv) {
     int lnsCands   = 0;
     int ilsPerturb = 0;
     int kbandArg   = 2;     // phase-2 k-critical selection band
+    string initMode = "auto";
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -1646,6 +1751,7 @@ int main(int argc, char** argv) {
         else if (a == "--nh-cands")          lnsCands   = atoi(need("--nh-cands"));
         else if (a == "--ils-perturb")       ilsPerturb = atoi(need("--ils-perturb"));
         else if (a == "--kband")             kbandArg   = atoi(need("--kband"));
+        else if (a == "--init")              initMode   = need("--init");
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         else if (inputFile.empty())  inputFile  = a;
         else if (outputFile.empty()) outputFile = a;
@@ -1665,6 +1771,8 @@ int main(int argc, char** argv) {
 
     SAkGD solver;
     if (seed >= 0) solver.rng.seed((uint64_t)seed);
+    if (verifyOnly) initMode = "input";   // verify must report the file as-is
+    solver.initMode       = initMode;
     solver.statusFile     = statusFile;
     solver.statusId       = statusId;
     solver.statusInterval = max(0.05, statusInterval);
