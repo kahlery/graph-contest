@@ -682,6 +682,54 @@ public:
         }
     }
 
+    // Barycenter smoothing of the CURRENT pos: pull each vertex toward the
+    // mean of its graph neighbours, rescaling the bounding box back onto the
+    // canvas every round so the layout cannot collapse to the centre. On
+    // near-planar graphs this cuts the snake layout's crossing density by a
+    // further ~7x (Automatic-8: avg 92 -> 14 crossings/edge in 50 rounds).
+    // Duplicate/collinear integer positions left by the final rounding are
+    // resolved by the regular repair pipeline downstream.
+    void barycenterSmooth(int rounds) {
+        if (n <= 2 || m == 0) return;
+        vector<double> px(n), py(n), ax(n), ay(n);
+        vector<int> cnt(n);
+        for (int i = 0; i < n; i++) {
+            px[i] = (double)(pos[i].x - ox);
+            py[i] = (double)(pos[i].y - oy);
+        }
+        for (int r = 0; r < rounds; r++) {
+            fill(ax.begin(), ax.end(), 0.0);
+            fill(ay.begin(), ay.end(), 0.0);
+            fill(cnt.begin(), cnt.end(), 0);
+            for (int e = 0; e < m; e++) {
+                int u = edges[e].u, v = edges[e].v;
+                ax[u] += px[v]; ay[u] += py[v]; cnt[u]++;
+                ax[v] += px[u]; ay[v] += py[u]; cnt[v]++;
+            }
+            double mnx = 1e300, mny = 1e300, mxx = -1e300, mxy = -1e300;
+            for (int i = 0; i < n; i++) {
+                if (cnt[i]) {
+                    px[i] = 0.5 * px[i] + 0.5 * ax[i] / cnt[i];
+                    py[i] = 0.5 * py[i] + 0.5 * ay[i] / cnt[i];
+                }
+                mnx = min(mnx, px[i]); mxx = max(mxx, px[i]);
+                mny = min(mny, py[i]); mxy = max(mxy, py[i]);
+            }
+            double spx = max(1e-9, mxx - mnx), spy = max(1e-9, mxy - mny);
+            for (int i = 0; i < n; i++) {
+                px[i] = (px[i] - mnx) / spx * (double)W;
+                py[i] = (py[i] - mny) / spy * (double)H;
+            }
+        }
+        for (int i = 0; i < n; i++) {
+            ll x = (ll)llround(px[i]);
+            ll y = (ll)llround(py[i]);
+            if (x < 0) x = 0; if (x > W) x = W;
+            if (y < 0) y = 0; if (y > H) y = H;
+            pos[i] = {ox + x, oy + y};
+        }
+    }
+
     // ----- setup -------------------------------------------------------
     void setup(const GraphData& g) {
         n         = g.n;
@@ -709,12 +757,20 @@ public:
             vector<Pt> inputPos = pos;
             bfsSnakeLayout();
             double snAvg = estimateAvgCross(300);
-            bool useSnake = (initMode == "bfs") || snAvg < 0.8 * inAvg;
-            if (!useSnake) pos = inputPos;
+            vector<Pt> snakePos = pos;
+            barycenterSmooth(50);
+            double smAvg = estimateAvgCross(300);
+            const char* chosen;
+            if (initMode != "bfs" && !(min(snAvg, smAvg) < 0.8 * inAvg)) {
+                pos = inputPos;  chosen = "input";
+            } else if (smAvg <= snAvg) {
+                chosen = "bfs-snake+smooth";
+            } else {
+                pos = snakePos;  chosen = "bfs-snake";
+            }
             cerr << "init: avg crossings/edge  input≈" << inAvg
-                 << "  bfs-snake≈" << snAvg
-                 << "  -> using " << (useSnake ? "bfs-snake" : "input")
-                 << " layout\n";
+                 << "  bfs-snake≈" << snAvg << "  +smooth≈" << smAvg
+                 << "  -> using " << chosen << " layout\n";
         }
 
         int gridSide = max(8, min(256, (int)round(sqrt((double)max(m, 1)) / 1.5)));
@@ -1368,7 +1424,11 @@ public:
                 }
             }
             startingTemp *= decTW;
-            restoreBest();
+            // Restart each wave from the best — but a full restore recomputes
+            // all crossings (expensive on big graphs), so skip it when the
+            // current state already matches best k and is within ~1% of its X.
+            if (kVal != bestK || totalX > bestX + max<ll>(4, bestX / 100))
+                restoreBest();
         }
 
         writeStatus(startingTemp, moves, accepts, "phase-done");
@@ -1566,8 +1626,11 @@ public:
                 windowImproves = 0;
             }
 
-            // Periodic restart from best to bound quality degradation.
-            if (iters % restartEvery == 0) restoreBest();
+            // Periodic restart from best to bound quality degradation. Skip
+            // the (expensive) restore when current is already ~at the best.
+            if (iters % restartEvery == 0 &&
+                (kVal != bestK || totalX > bestX + max<ll>(4, bestX / 100)))
+                restoreBest();
 
             double el = elapsed();
             if (el >= nextStatus) {

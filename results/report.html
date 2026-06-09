@@ -5,58 +5,122 @@
 <meta http-equiv="refresh" content="5">
 <title>GD-2025 k-planarity Results</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg:#f0f0f0; --card:#ffffff; --border:#c4c4c4;
-    --text:#111111; --muted:#666666; --th-bg:#e4e4e4;
-    --row-alt:#f7f7f7; --row-hover:#eef2ff;
-    --best:#1a6e2e; --accent:#4361ee;
+    --bg:#f1f3f6; --card:#ffffff; --border:#e2e6ec;
+    --text:#0f172a; --muted:#64748b; --th-bg:#f8fafc;
+    --row-alt:#fafbfc; --row-hover:#eef2ff;
+    --best:#15803d; --accent:#4f46e5;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { background:var(--bg); color:var(--text);
-          font-family:'Segoe UI',system-ui,sans-serif;
-          padding:32px; max-width:1400px; margin:0 auto; }
-  h1 { font-size:1.6rem; font-weight:700; padding-bottom:10px;
-        border-bottom:3px solid var(--accent); margin-bottom:6px; }
-  .sub { color:var(--muted); font-size:.85rem; margin-bottom:24px; margin-top:4px; }
-  h2 { font-size:.76rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
-        color:var(--muted); border-bottom:1px solid var(--border);
-        padding-bottom:4px; margin:24px 0 10px; }
-  .card { background:var(--card); border:1px solid var(--border);
-           border-radius:6px; padding:20px; margin-bottom:16px; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:'Inter',system-ui,-apple-system,sans-serif;
+    padding:28px 36px; max-width:1380px; margin:0 auto; line-height:1.5;
+  }
+
+  /* ── page header ── */
+  .page-header { margin-bottom:20px; padding-bottom:14px;
+                  border-bottom:2px solid var(--border); }
+  .page-header h1 { font-size:1.55rem; font-weight:800; color:var(--text);
+                     letter-spacing:-.025em; display:flex; align-items:center; gap:10px; }
+  .page-header h1 .badge {
+    display:inline-block; background:var(--accent); color:#fff;
+    font-size:.6rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+    padding:3px 8px; border-radius:4px; vertical-align:middle; margin-top:-2px;
+  }
+  .sub { color:var(--muted); font-size:.8rem; margin-top:5px; display:flex;
+          gap:12px; flex-wrap:wrap; align-items:center; }
+  .sub-dot { color:var(--border); }
+
+  /* ── section headings ── */
+  h2 {
+    font-size:.67rem; font-weight:800; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--muted); padding-bottom:7px; margin:36px 0 14px;
+    border-bottom:2px solid var(--border); display:flex; align-items:center; gap:8px;
+  }
+  h2::before { content:''; display:inline-block; width:3px; height:.9em;
+                background:var(--accent); border-radius:2px; flex-shrink:0; }
+
+  /* ── cards ── */
+  .card {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:10px; padding:20px; margin-bottom:16px;
+    box-shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);
+  }
+
+  /* ── charts ── */
   .charts { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
   @media(max-width:900px){ .charts{ grid-template-columns:1fr; } }
   canvas { max-height:300px; }
+
+  /* ── tables ── */
   table { width:100%; border-collapse:collapse; font-size:.82rem; }
-  th,td { padding:6px 10px; border:1px solid var(--border); text-align:right; }
-  th { background:var(--th-bg); color:#333; text-align:center; font-weight:700;
-        font-size:.74rem; letter-spacing:.05em; text-transform:uppercase; }
+  /* Best Results can have many method columns — scroll instead of overflowing,
+     and keep the Graph column pinned while scrolling. */
+  .tbl-scroll { overflow-x:auto; }
+  .tbl-best { font-size:.76rem; min-width:max-content; }
+  .tbl-best th, .tbl-best td { padding:6px 10px; }
+  .tbl-best td:first-child, .tbl-best th:first-child {
+    position:sticky; left:0; z-index:2; background:var(--card);
+  }
+  tbody tr:nth-child(even) .tbl-best td:first-child,
+  .tbl-best tbody tr:nth-child(even) td:first-child { background:var(--row-alt); }
+  th,td { padding:9px 14px; text-align:right; border-bottom:1px solid var(--border); }
+  th {
+    background:var(--th-bg); color:var(--muted); text-align:center;
+    font-size:.65rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+    border-bottom:2px solid var(--border); white-space:nowrap;
+  }
   td:first-child,th:first-child { text-align:left; }
-  tr:nth-child(even) { background:var(--row-alt); }
-  tr:hover { background:var(--row-hover); }
+  tbody tr:nth-child(even) td { background:var(--row-alt); }
+  tbody tr:hover td { background:var(--row-hover); }
   strong { color:var(--best); font-weight:700; }
-  details { background:var(--card); border:1px solid var(--border);
-             border-radius:6px; padding:10px 14px; margin-bottom:6px; }
-  summary { cursor:pointer; font-weight:600; color:#333; font-size:.85rem; }
+
+  /* ── run history details ── */
+  details {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:8px; padding:12px 16px; margin-bottom:6px;
+    box-shadow:0 1px 2px rgba(15,23,42,.04);
+    transition:box-shadow .15s;
+  }
+  details[open] { box-shadow:0 2px 8px rgba(15,23,42,.08); }
+  summary {
+    cursor:pointer; font-weight:600; color:var(--text);
+    font-size:.85rem; user-select:none;
+    display:flex; align-items:center; gap:8px;
+  }
+  summary::marker { color:var(--muted); }
   summary:hover { color:var(--accent); }
-  .inner { margin-top:8px; font-size:.77rem; }
-  .inner td { padding:3px 8px; }
-  .legend { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:.82rem; }
-  .dot { width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:5px; }
-  .progress-bar-outer { background:#d8d8d8; height:22px; margin:12px 0; border-radius:4px; overflow:hidden; }
-  .progress-bar-inner { height:100%; background:linear-gradient(90deg,#4361ee,#f72585);
-                          border-radius:4px; position:relative; min-width:2px; transition:width .4s; }
-  .progress-bar-label { position:absolute; right:6px; top:50%; transform:translateY(-50%);
-                          font-size:.72rem; font-weight:700; color:#fff;
-                          text-shadow:0 1px 2px rgba(0,0,0,.3); white-space:nowrap; }
+  .inner { margin-top:10px; font-size:.77rem; }
+  .inner td { padding:4px 10px; }
+
+  /* ── legend ── */
+  .legend { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px;
+             font-size:.8rem; color:var(--muted); align-items:center; }
+  .dot { width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:4px; }
+
+  /* ── progress bar ── */
+  .progress-bar-outer { background:#dde1e9; height:18px; margin:14px 0;
+                          border-radius:99px; overflow:hidden; }
+  .progress-bar-inner { height:100%; background:linear-gradient(90deg,var(--accent),#a855f7);
+                          border-radius:99px; position:relative; min-width:4px; transition:width .5s; }
+  .progress-bar-label { position:absolute; right:8px; top:50%; transform:translateY(-50%);
+                          font-size:.68rem; font-weight:700; color:#fff;
+                          text-shadow:0 1px 2px rgba(0,0,0,.35); white-space:nowrap; }
+
+  /* ── prog card legacy classes (used by JS) ── */
   .prog-card { border-left:4px solid var(--accent); }
   .prog-header { display:flex; justify-content:space-between; align-items:baseline;
                   flex-wrap:wrap; gap:6px; padding-bottom:12px; margin-bottom:14px;
                   border-bottom:1px solid var(--border); }
   .prog-run-id { font-weight:700; font-size:.95rem; color:var(--text); margin-right:10px; }
   .prog-started { font-size:.8rem; color:var(--muted); }
-  .prog-meta { font-size:.78rem; color:var(--muted); }
-  .prog-stats { display:flex; gap:28px; flex-wrap:wrap; margin-bottom:4px; }
+  .prog-meta    { font-size:.78rem; color:var(--muted); }
+  .prog-stats   { display:flex; gap:28px; flex-wrap:wrap; margin-bottom:4px; }
   .prog-stat-label { color:var(--muted); font-size:.68rem; text-transform:uppercase;
                       letter-spacing:.07em; font-weight:700; display:block; margin-bottom:3px; }
   .prog-stat-value { font-size:.92rem; font-weight:600; color:var(--text); }
@@ -65,79 +129,89 @@
   .prog-row { display:flex; align-items:baseline; gap:8px; font-size:.82rem; }
   .prog-row-label { color:var(--muted); font-size:.68rem; text-transform:uppercase;
                      letter-spacing:.06em; font-weight:700; min-width:130px; flex-shrink:0; }
-  .prog-row-val { color:#333; }
+  .prog-row-val { color:#334155; }
   .prog-row-val.running { color:var(--accent); font-weight:600; }
-  .imp { color:#2a7a3a; font-size:.78rem; }
-  .warn { color:#c0392b; font-size:.78rem; }
-  .cfg { color:#888; font-size:.68rem; font-weight:400; font-style:normal; }
-  .best-cell { background:#edfbf0; }
-  .ls-wait { color:#aaa; font-style:italic; font-size:.78rem; }
-  .ls-ph1  { color:#d97706; font-weight:600; font-size:.78rem; }
-  .ls-ph2  { color:#2563eb; font-weight:600; font-size:.78rem; }
-  .ls-ils  { color:#7c3aed; font-weight:600; font-size:.78rem; }
-  .ls-lns  { color:#0891b2; font-weight:600; font-size:.78rem; }
-  .ls-done { color:#16a34a; font-weight:700; font-size:.78rem; }
+
+  /* ── misc ── */
+  .imp  { color:#16a34a; font-size:.78rem; }
+  .warn { color:#dc2626; font-size:.78rem; }
+  .cfg  { color:#94a3b8; font-size:.68rem; font-weight:400; font-style:normal; }
+  .best-cell { background:#f0fdf4 !important; }
+  .ls-wait { color:#cbd5e1; font-size:.77rem; }
+  .ls-ph1  { color:#d97706; font-weight:600; font-size:.77rem; }
+  .ls-ph2  { color:#2563eb; font-weight:600; font-size:.77rem; }
+  .ls-ils  { color:#7c3aed; font-weight:600; font-size:.77rem; }
+  .ls-lns  { color:#0891b2; font-weight:600; font-size:.77rem; }
+  .ls-done { color:#16a34a; font-weight:700; font-size:.77rem; }
 </style>
 </head>
 <body>
-<h1>GD-2025 k-planarity Results</h1>
-<div class="sub">Generated 2026-06-07 16:23:26 &nbsp;|&nbsp; 9 graphs &nbsp;|&nbsp; 5 runs</div>
+<div class="page-header">
+  <h1>GD-2025 k-planarity <span class="badge">Results</span></h1>
+  <div class="sub">
+    <span>Generated 2026-06-09 22:39:54</span>
+    <span class="sub-dot">·</span>
+    <span>9 graphs</span>
+    <span class="sub-dot">·</span>
+    <span>11 runs</span>
+  </div>
+</div>
 
-<div class="legend"><span><span class="dot" style="background:#999"></span>Baseline</span><span><span class="dot" style="background:#4361ee"></span>SA</span><span><span class="dot" style="background:#f72585"></span>ILS</span><span><span class="dot" style="background:#7209b7"></span>STAGED</span><span><span class="dot" style="background:#f4a261"></span>STAGED-ADAPTIVE</span></div>
+<div class="legend"><span><span class="dot" style="background:#999"></span>Baseline</span><span><span class="dot" style="background:#4361ee"></span>SA</span><span><span class="dot" style="background:#f72585"></span>ILS</span><span><span class="dot" style="background:#fa9fc7"></span>ILS-BASE</span><span><span class="dot" style="background:#9db2f5"></span>SA-BASE</span><span><span class="dot" style="background:#7209b7"></span>STAGED</span><span><span class="dot" style="background:#f4a261"></span>STAGED-ADAPTIVE</span><span><span class="dot" style="background:#f7cfa6"></span>STAGED-ADAPTIVE-BASE</span><span><span class="dot" style="background:#bb8fd6"></span>STAGED-BASE</span></div>
+<!-- PROGRESS_START -->
 
 <h2>Run Progress</h2>
 <div class="card prog-card">
   <div class="prog-header">
     <div>
-      <span class="prog-run-id">Run 2026-06-07_14-29-52</span>
-      <span class="prog-started">started 2026-06-07 14:30:52</span>
+      <span class="prog-run-id">Run 2026-06-09_12-39-20</span>
+      <span class="prog-started">started 2026-06-09 12:39:56</span>
     </div>
-    <div class="prog-meta">1 workers &nbsp;·&nbsp; graphs [1, 2, 3, 4, 5, 6, 7, 8, 9] &nbsp;·&nbsp; SA, ILS, STAGED, STAGED-ADAPTIVE</div>
+    <div class="prog-meta">2 workers &nbsp;·&nbsp; graphs [1, 2, 3, 4] &nbsp;·&nbsp; SA, SA-BASE, ILS</div>
   </div>
   <div class="prog-stats">
-    <div><span class="prog-stat-label">Combos Done</span><span class="prog-stat-value">36 / 36</span></div>
-    <div><span class="prog-stat-label">Progress</span><span class="prog-stat-value">100.0%</span></div>
-    <div><span class="prog-stat-label">Elapsed</span><span class="prog-stat-value" id="elapsed">1h 53m</span></div>
-    <div><span class="prog-stat-label">Remaining</span><span class="prog-stat-value" id="remaining">~0 min</span></div>
-    <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta" id="eta">16:23</span></div>
+    <div><span class="prog-stat-label">Combos Done</span><span class="prog-stat-value">6 / 12</span></div>
+    <div><span class="prog-stat-label">Progress</span><span class="prog-stat-value">50.0%</span></div>
+    <div><span class="prog-stat-label">Elapsed</span><span class="prog-stat-value" id="elapsed">10h 0m</span></div>
+    <div><span class="prog-stat-label">Remaining</span><span class="prog-stat-value" id="remaining">~3.6 min</span></div>
+    <div><span class="prog-stat-label">ETA</span><span class="prog-stat-value eta" id="eta">22:43</span></div>
   </div>
   <div class="progress-bar-outer">
-    <div class="progress-bar-inner" style="width:100.0%">
-      <span class="progress-bar-label">100.0%</span>
+    <div class="progress-bar-inner" style="width:50.0%">
+      <span class="progress-bar-label">50.0%</span>
     </div>
   </div>
   <div class="prog-current">
-    <div class="prog-row"><span class="prog-row-label">Last completed</span><span class="prog-row-val">Automatic-9 &nbsp;/&nbsp; <em>STAGED-ADAPTIVE</em> &nbsp;→&nbsp; k=None, totalX=None <span class='warn'>⚠ invalid</span></span></div>
-    <div class="prog-row"><span class="prog-row-label">Currently running</span><span class="prog-row-val running">all combos complete</span></div>
+    <div class="prog-row"><span class="prog-row-label">Last completed</span><span class="prog-row-val">Automatic-2 &nbsp;/&nbsp; <em>ILS</em> &nbsp;→&nbsp; k=5, totalX=192 <span class='imp'>(+97.1%)</span></span></div>
+    <div class="prog-row"><span class="prog-row-label">Currently running</span><span class="prog-row-val running">Automatic-3 &nbsp;/&nbsp; <em>SA</em></span></div>
   </div>
 </div>
+<!-- PROGRESS_END -->
 <!-- LIVE_STATUS_START -->
-<h2>Live Status <small style='font-weight:400;text-transform:none;font-size:.75rem;color:#666'>— 27/27 done, 0 running — auto-refresh 5s</small></h2><div class='card'><table><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th></tr></thead><tbody><tr><td><strong>Automatic-1</strong></td><td><span class='ls-done'>✓ k=10 X=453</span></td><td><span class='ls-done'>✓ k=10 X=431</span></td><td><span class='ls-done'>✓ k=18 X=648</span></td></tr>
-<tr><td><strong>Automatic-2</strong></td><td><span class='ls-done'>✓ k=6 X=194</span></td><td><span class='ls-done'>✓ k=6 X=311</span></td><td><span class='ls-done'>✓ k=16 X=905</span></td></tr>
-<tr><td><strong>Automatic-3</strong></td><td><span class='ls-done'>✓ k=63 X=6637</span></td><td><span class='ls-done'>✓ k=65 X=6713</span></td><td><span class='ls-done'>✓ k=62 X=4678</span></td></tr>
-<tr><td><strong>Automatic-4</strong></td><td><span class='ls-done'>✓ k=10 X=1028</span></td><td><span class='ls-done'>✓ k=11 X=1043</span></td><td><span class='ls-done'>✓ k=17 X=1776</span></td></tr>
-<tr><td><strong>Automatic-5</strong></td><td><span class='ls-done'>✓ k=1013 X=533744</span></td><td><span class='ls-done'>✓ k=1083 X=576731</span></td><td><span class='ls-done'>✓ k=902 X=450626</span></td></tr>
-<tr><td><strong>Automatic-6</strong></td><td><span class='ls-done'>✓ k=1257 X=825811</span></td><td><span class='ls-done'>✓ k=1327 X=867986</span></td><td><span class='ls-done'>✓ k=1236 X=784359</span></td></tr>
-<tr><td><strong>Automatic-7</strong></td><td><span class='ls-done'>✓ k=81 X=29141</span></td><td><span class='ls-done'>✓ k=130 X=45841</span></td><td><span class='ls-done'>✓ k=121 X=44847</span></td></tr>
-<tr><td><strong>Automatic-8</strong></td><td><span class='ls-done'>✓ k=9842 X=43170144</span></td><td><span class='ls-done'>✓ k=10101 X=45252783</span></td><td><span class='ls-done'>✓ k=9937 X=44176529</span></td></tr>
-<tr><td><strong>Automatic-9</strong></td><td><span class='ls-done'>✓ k=1947 X=1829244</span></td><td><span class='ls-done'>✓ k=2121 X=2033965</span></td><td><span class='ls-done'>✓ k=2056 X=2010447</span></td></tr></tbody></table></div>
+<h2>Live Status <small style='font-weight:400;text-transform:none;font-size:.75rem;color:#666'>— 0/1 done, 1 running — auto-refresh 5s</small></h2><div class='card'><table><thead><tr><th>Graph</th><th>SA</th></tr></thead><tbody><tr><td><strong>Automatic-8</strong></td><td><span class='ls-ph1'>▶ ph1 k=210 t=90s</span></td></tr></tbody></table></div>
 <!-- LIVE_STATUS_END -->
 <h2>Best Results (All Runs)</h2>
-<div class="card">
-<table>
+<div class="card" style="padding:8px">
+<div class="tbl-scroll">
+<table class="tbl-best">
   <thead>
-    <tr><th>Graph</th><th>Nodes</th><th>Edges</th><th>Baseline k</th><th colspan='2' style='color:#4361ee'>SA</th><th colspan='2' style='color:#f72585'>ILS</th><th colspan='2' style='color:#7209b7'>STAGED</th><th colspan='2' style='color:#f4a261'>STAGED-ADAPTIVE</th></tr>
-    <tr><th colspan="4"></th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th></tr>
+    <tr><th>Graph</th><th>Nodes</th><th>Edges</th><th>Baseline k</th><th colspan='2' style='color:#4361ee'>SA</th><th colspan='2' style='color:#f72585'>ILS</th><th colspan='2' style='color:#fa9fc7'>ILS-BASE</th><th colspan='2' style='color:#9db2f5'>SA-BASE</th><th colspan='2' style='color:#7209b7'>STAGED</th><th colspan='2' style='color:#f4a261'>STAGED-ADAPTIVE</th><th colspan='2' style='color:#f7cfa6'>STAGED-ADAPTIVE-BASE</th><th colspan='2' style='color:#bb8fd6'>STAGED-BASE</th></tr>
+    <tr><th colspan="4"></th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th><th>k</th><th>totalX</th></tr>
   </thead>
-  <tbody><tr><td>Automatic-1</td><td>50</td><td>202</td><td>96</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 426.4s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>401</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.0s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>407</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.4s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>409</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.2s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>396</td></tr><tr><td>Automatic-2</td><td>144</td><td>314</td><td>173</td><td class='best-cell'><strong>4</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 417.9s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>110</td><td class='best-cell'><strong>4</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.0s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>130</td><td>6<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.0s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>243</td><td>5<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.1s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>173</td></tr><tr><td>Automatic-3</td><td>100</td><td>420</td><td>216</td><td class='best-cell'><strong>54</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.0s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>5522</td><td>58<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.4s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>5985</td><td>58<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 4w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.1s &nbsp;·&nbsp; run 2026-06-05_10-23-20</small></td><td>4308</td><td>—</td><td>—</td></tr><tr><td>Automatic-4</td><td>196</td><td>571</td><td>272</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-07_13-59-19</small></td><td>926</td><td>10<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-07_13-41-13</small></td><td>1113</td><td>17<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>1776</td><td>—</td><td>—</td></tr><tr><td>Automatic-5</td><td>500</td><td>2556</td><td>1255</td><td>1002<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 91.5s &nbsp;·&nbsp; run 2026-06-07_13-41-13</small></td><td>530270</td><td>1077<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 92.4s &nbsp;·&nbsp; run 2026-06-07_13-59-19</small></td><td>571142</td><td class='best-cell'><strong>902</strong><br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 96.0s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>450626</td><td>—</td><td>—</td></tr><tr><td>Automatic-6</td><td>200</td><td>3000</td><td>1523</td><td>1247<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 92.5s &nbsp;·&nbsp; run 2026-06-07_13-41-13</small></td><td>808710</td><td>1288<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 93.2s &nbsp;·&nbsp; run 2026-06-07_13-59-19</small></td><td>805338</td><td class='best-cell'><strong>1236</strong><br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 95.9s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>784359</td><td>—</td><td>—</td></tr><tr><td>Automatic-7</td><td>500</td><td>1740</td><td>869</td><td class='best-cell'><strong>81</strong><br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 90.6s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>29141</td><td>130<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 90.6s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>45841</td><td>121<br><small class='cfg'>1.5m budget &nbsp;·&nbsp; 1w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 90.9s &nbsp;·&nbsp; run 2026-06-07_14-24-56</small></td><td>44847</td><td>—</td><td>—</td></tr><tr><td>Automatic-8</td><td>10466</td><td>20288</td><td>10193</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-9</td><td>2519</td><td>4938</td><td>2542</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody>
+  <tbody><tr><td>Automatic-1</td><td>50</td><td>202</td><td>95</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>5.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 275.0s &nbsp;·&nbsp; run 2026-06-03_04-33-59</small></td><td>402</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.6s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>412</td><td>—</td><td>—</td><td>10<br><small class='cfg'>0.25m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 15.0s &nbsp;·&nbsp; run 2026-06-09_12-35-49</small></td><td>450</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>405</td><td class='best-cell'><strong>9</strong><br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.1s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>414</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-2</td><td>144</td><td>314</td><td>173</td><td>5<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>134</td><td class='best-cell'><strong>4</strong><br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.0s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>115</td><td>—</td><td>—</td><td>6<br><small class='cfg'>0.6m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 36.0s &nbsp;·&nbsp; run 2026-06-09_12-39-20</small></td><td>240</td><td>5<br><small class='cfg'>2.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 120.1s &nbsp;·&nbsp; run 2026-06-07_13-11-16</small></td><td>195</td><td>6<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.1s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>207</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-3</td><td>100</td><td>420</td><td>216</td><td class='best-cell'><strong>36</strong><br><small class='cfg'>2.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 120.0s &nbsp;·&nbsp; run 2026-06-07_13-11-16</small></td><td>4418</td><td>37<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.1s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>4591</td><td>—</td><td>—</td><td>—</td><td>—</td><td>37<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.1s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>4537</td><td>39<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.1s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>4926</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-4</td><td>196</td><td>571</td><td>272</td><td class='best-cell'><strong>7</strong><br><small class='cfg'>5.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 300.0s &nbsp;·&nbsp; run 2026-06-03_04-33-59</small></td><td>684</td><td>9<br><small class='cfg'>5.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 300.0s &nbsp;·&nbsp; run 2026-06-03_04-33-59</small></td><td>741</td><td>15<br><small class='cfg'>5.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 300.1s &nbsp;·&nbsp; run 2026-06-09_03-55-41</small></td><td>1467</td><td>13<br><small class='cfg'>5.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 300.0s &nbsp;·&nbsp; run 2026-06-09_03-55-41</small></td><td>1129</td><td>9<br><small class='cfg'>1.0m budget &nbsp;·&nbsp; 8w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 60.1s &nbsp;·&nbsp; run 2026-06-09_03-37-24</small></td><td>916</td><td>11<br><small class='cfg'>5.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 300.1s &nbsp;·&nbsp; run 2026-06-09_03-55-41</small></td><td>1112</td><td>16<br><small class='cfg'>5.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 300.0s &nbsp;·&nbsp; run 2026-06-09_03-55-41</small></td><td>1145</td><td>11<br><small class='cfg'>5.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 300.1s &nbsp;·&nbsp; run 2026-06-09_03-55-41</small></td><td>804</td></tr><tr><td>Automatic-5</td><td>500</td><td>2556</td><td>1255</td><td>196<br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 900.7s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>108711</td><td>257<br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 900.8s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>136473</td><td>—</td><td>—</td><td>—</td><td>—</td><td>134<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 481.6s &nbsp;·&nbsp; run 2026-06-03_04-33-59</small></td><td>71632</td><td class='best-cell'><strong>123</strong><br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 481.6s &nbsp;·&nbsp; run 2026-06-03_04-33-59</small></td><td>65058</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-6</td><td>200</td><td>3000</td><td>1492</td><td>691<br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 901.7s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>555603</td><td>940<br><small class='cfg'>3.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 182.6s &nbsp;·&nbsp; run 2026-06-07_13-11-16</small></td><td>688036</td><td>—</td><td>—</td><td>—</td><td>—</td><td>789<br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 902.4s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>590578</td><td class='best-cell'><strong>633</strong><br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 902.6s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>543640</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-7</td><td>500</td><td>1740</td><td>858</td><td>44<br><small class='cfg'>8.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 480.4s &nbsp;·&nbsp; run 2026-06-03_04-33-59</small></td><td>16035</td><td>42<br><small class='cfg'>3.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 181.2s &nbsp;·&nbsp; run 2026-06-07_13-11-16</small></td><td>17416</td><td>—</td><td>—</td><td>—</td><td>—</td><td class='best-cell'><strong>39</strong><br><small class='cfg'>3.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 181.3s &nbsp;·&nbsp; run 2026-06-07_13-11-16</small></td><td>16181</td><td>54<br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 771.9s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>16856</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-8</td><td>10466</td><td>20288</td><td>10011</td><td>9762<br><small class='cfg'>25.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 3615.2s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>37394927</td><td>9854<br><small class='cfg'>25.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 4809.4s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>40020406</td><td>—</td><td>—</td><td>—</td><td>—</td><td class='best-cell'><strong>9535</strong><br><small class='cfg'>25.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 3982.2s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>35512720</td><td>9635<br><small class='cfg'>25.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 4986.7s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>36259492</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Automatic-9</td><td>2519</td><td>4938</td><td>2383</td><td class='best-cell'><strong>134</strong><br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 899.9s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>139409</td><td>173<br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 912.5s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>196493</td><td>—</td><td>—</td><td>—</td><td>—</td><td>162<br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 911.4s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>145509</td><td>147<br><small class='cfg'>15.0m budget &nbsp;·&nbsp; 2w &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; ⏱ 819.4s &nbsp;·&nbsp; run 2026-06-06_04-41-05</small></td><td>108372</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody>
 </table>
+</div>
 </div>
 
 <h2>Method Runtime &amp; Config</h2>
-<div class='card'><table><thead><tr><th>Method</th><th>Budget / combo</th><th>Workers</th><th>Combos run</th><th>Graphs</th><th>Avg wall / combo</th><th>Total wall</th></tr></thead><tbody><tr><td style='color:#4361ee;font-weight:700'>SA</td><td>1.0–8.0 min</td><td>1–4</td><td>35</td><td>9</td><td>2m 26s</td><td>1h 25m</td></tr>
-<tr><td style='color:#f72585;font-weight:700'>ILS</td><td>1.0–8.0 min</td><td>1–4</td><td>35</td><td>9</td><td>3m 39s</td><td>2h 8m</td></tr>
-<tr><td style='color:#7209b7;font-weight:700'>STAGED</td><td>1.0–8.0 min</td><td>1–4</td><td>21</td><td>9</td><td>4m 49s</td><td>1h 41m</td></tr>
-<tr><td style='color:#f4a261;font-weight:700'>STAGED-ADAPTIVE</td><td>1.0–8.0 min</td><td>1–4</td><td>11</td><td>9</td><td>3m 10s</td><td>34m 50s</td></tr></tbody></table></div>
+<div class='card'><table><thead><tr><th>Method</th><th>Budget / combo</th><th>Workers</th><th>Combos run</th><th>Graphs</th><th>Avg wall / combo</th><th>Total wall</th></tr></thead><tbody><tr><td style='color:#4361ee;font-weight:700'>SA</td><td>0.2–25.0 min</td><td>1–8</td><td>32</td><td>9</td><td>8m 20s</td><td>4h 26m</td></tr>
+<tr><td style='color:#f72585;font-weight:700'>ILS</td><td>0.6–25.0 min</td><td>2–8</td><td>28</td><td>9</td><td>11m 45s</td><td>5h 29m</td></tr>
+<tr><td style='color:#fa9fc7;font-weight:700'>ILS-BASE</td><td>5.0 min</td><td>2</td><td>1</td><td>1</td><td>5m 0s</td><td>5m 0s</td></tr>
+<tr><td style='color:#9db2f5;font-weight:700'>SA-BASE</td><td>0.2–5.0 min</td><td>1–2</td><td>6</td><td>3</td><td>1m 8s</td><td>6m 51s</td></tr>
+<tr><td style='color:#7209b7;font-weight:700'>STAGED</td><td>1.0–25.0 min</td><td>2–8</td><td>26</td><td>9</td><td>11m 37s</td><td>5h 2m</td></tr>
+<tr><td style='color:#f4a261;font-weight:700'>STAGED-ADAPTIVE</td><td>1.0–25.0 min</td><td>2–8</td><td>18</td><td>9</td><td>14m 6s</td><td>4h 14m</td></tr>
+<tr><td style='color:#f7cfa6;font-weight:700'>STAGED-ADAPTIVE-BASE</td><td>5.0 min</td><td>2</td><td>1</td><td>1</td><td>5m 0s</td><td>5m 0s</td></tr>
+<tr><td style='color:#bb8fd6;font-weight:700'>STAGED-BASE</td><td>5.0 min</td><td>2</td><td>1</td><td>1</td><td>5m 0s</td><td>5m 0s</td></tr></tbody></table></div>
 
 <h2>k-value Comparison</h2>
 <div class="charts">
@@ -145,71 +219,115 @@
   <div class="card"><canvas id="improvChart"></canvas></div>
 </div>
 
-<h2>Run History</h2>
-<details>
-          <summary>Run 2026-06-07_14-29-52 &nbsp;|&nbsp; 2026-06-07T14:30:52
-            &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
-            methods=[sa, ils, staged, staged-adaptive] &nbsp;·&nbsp; budget [S=1.0m, M=1.0m, L=1.0m] &nbsp;·&nbsp; seed 42
-            &nbsp;|&nbsp; 36 combos</summary>
-          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>17 <small>(+82.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>16 <small>(+83.3%)</small><br><small>⏱ 60.0s | 1w</small></td></tr>
-<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 60.0s | 1w</small></td><td>7 <small>(+96.0%)</small><br><small>⏱ 60.0s | 1w</small></td><td>10 <small>(+94.2%)</small><br><small>⏱ 60.0s | 1w</small></td><td>8 <small>(+95.4%)</small><br><small>⏱ 60.0s | 1w</small></td></tr>
-<tr><td>Automatic-3</td><td>64 <small>(+70.4%)</small><br><small>⏱ 60.0s | 1w</small></td><td>65 <small>(+69.9%)</small><br><small>⏱ 60.0s | 1w</small></td><td>64 <small>(+70.4%)</small><br><small>⏱ 60.1s | 1w</small></td><td>60 <small>(+72.2%)</small><br><small>⏱ 60.1s | 1w</small></td></tr>
-<tr><td>Automatic-4</td><td>11 <small>(+96.0%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 60.1s | 1w</small></td><td>17 <small>(+93.8%)</small><br><small>⏱ 60.1s | 1w</small></td><td>16 <small>(+94.1%)</small><br><small>⏱ 60.1s | 1w</small></td></tr>
-<tr><td>Automatic-5</td><td>1092 <small>(+13.0%)</small><br><small>⏱ 61.7s | 1w</small></td><td>1111 <small>(+11.5%)</small><br><small>⏱ 62.2s | 1w</small></td><td>1005 <small>(+19.9%)</small><br><small>⏱ 65.2s | 1w</small></td><td>1021 <small>(+18.6%)</small><br><small>⏱ 65.8s | 1w</small></td></tr>
-<tr><td>Automatic-6</td><td>1272 <small>(+16.5%)</small><br><small>⏱ 62.5s | 1w</small></td><td>1334 <small>(+12.4%)</small><br><small>⏱ 63.5s | 1w</small></td><td>1310 <small>(+14.0%)</small><br><small>⏱ 69.3s | 1w</small></td><td>1268 <small>(+16.7%)</small><br><small>⏱ 65.1s | 1w</small></td></tr>
-<tr><td>Automatic-7</td><td>144 <small>(+83.4%)</small><br><small>⏱ 60.6s | 1w</small></td><td>356 <small>(+59.0%)</small><br><small>⏱ 60.8s | 1w</small></td><td>188 <small>(+78.4%)</small><br><small>⏱ 61.0s | 1w</small></td><td>223 <small>(+74.3%)</small><br><small>⏱ 61.4s | 1w</small></td></tr>
-<tr><td>Automatic-8</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-9</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+<h2>Run History <small style="font-weight:400;color:#888">— expand a run for its k / total-crossings convergence (best of all workers)</small></h2>
+<details data-run="2026-06-09_12-39-20">
+          <summary><strong style='color:#4361ee'>convergence + envelope demo</strong> &nbsp;·&nbsp; Run 2026-06-09_12-39-20 &nbsp;|&nbsp; 2026-06-09T12:39:56
+            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
+            methods=[sa, sa-base, ils] &nbsp;·&nbsp; budget [S=0.6m, M=8.0m, L=15.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 6 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.5%)</small><br><small>⏱ 36.0s | 2w</small></td><td>9 <small>(+90.5%)</small><br><small>⏱ 36.5s | 2w</small></td><td>—</td><td>11 <small>(+88.4%)</small><br><small>⏱ 36.0s | 2w</small></td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 36.0s | 2w</small></td><td>5 <small>(+97.1%)</small><br><small>⏱ 36.0s | 2w</small></td><td>—</td><td>6 <small>(+96.5%)</small><br><small>⏱ 36.0s | 2w</small></td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
         </details>
-<details>
-          <summary>Run 2026-06-07_14-24-56 &nbsp;|&nbsp; 2026-06-07T14:25:56
-            &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
-            methods=[sa, ils, staged] &nbsp;·&nbsp; budget [S=1.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
-            &nbsp;|&nbsp; 27 combos</summary>
-          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>10 <small>(+89.6%)</small><br><small>⏱ 60.0s | 1w</small></td><td>10 <small>(+89.6%)</small><br><small>⏱ 60.0s | 1w</small></td><td>18 <small>(+81.2%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td></tr>
-<tr><td>Automatic-2</td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>16 <small>(+90.8%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td></tr>
-<tr><td>Automatic-3</td><td>63 <small>(+70.8%)</small><br><small>⏱ 60.0s | 1w</small></td><td>65 <small>(+69.9%)</small><br><small>⏱ 60.0s | 1w</small></td><td>62 <small>(+71.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td></tr>
-<tr><td>Automatic-4</td><td>10 <small>(+96.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 60.0s | 1w</small></td><td>17 <small>(+93.8%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td></tr>
-<tr><td>Automatic-5</td><td>1013 <small>(+19.3%)</small><br><small>⏱ 91.6s | 1w</small></td><td>1083 <small>(+13.7%)</small><br><small>⏱ 92.5s | 1w</small></td><td>902 <small>(+28.1%)</small><br><small>⏱ 96.0s | 1w</small></td><td>—</td></tr>
-<tr><td>Automatic-6</td><td>1257 <small>(+17.5%)</small><br><small>⏱ 92.7s | 1w</small></td><td>1327 <small>(+12.9%)</small><br><small>⏱ 94.0s | 1w</small></td><td>1236 <small>(+18.8%)</small><br><small>⏱ 95.9s | 1w</small></td><td>—</td></tr>
-<tr><td>Automatic-7</td><td>81 <small>(+90.7%)</small><br><small>⏱ 90.6s | 1w</small></td><td>130 <small>(+85.0%)</small><br><small>⏱ 90.6s | 1w</small></td><td>121 <small>(+86.1%)</small><br><small>⏱ 90.9s | 1w</small></td><td>—</td></tr>
-<tr><td>Automatic-8</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-9</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+<details data-run="2026-06-09_12-35-49">
+          <summary><strong style='color:#4361ee'>envelope testi</strong> &nbsp;·&nbsp; Run 2026-06-09_12-35-49 &nbsp;|&nbsp; 2026-06-09T12:36:04
+            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
+            methods=[sa, sa-base] &nbsp;·&nbsp; budget [S=0.25m, M=8.0m, L=15.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 2 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.5%)</small><br><small>⏱ 15.0s | 2w</small></td><td>—</td><td>—</td><td>10 <small>(+89.5%)</small><br><small>⏱ 15.0s | 2w</small></td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
         </details>
-<details>
-          <summary>Run 2026-06-07_13-59-19 &nbsp;|&nbsp; 2026-06-07T14:00:19
-            &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
-            methods=[sa, ils] &nbsp;·&nbsp; budget [S=1.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
-            &nbsp;|&nbsp; 14 combos</summary>
-          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>10 <small>(+89.6%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 60.0s | 1w</small></td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-3</td><td>63 <small>(+70.8%)</small><br><small>⏱ 60.0s | 1w</small></td><td>65 <small>(+69.9%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-4</td><td>9 <small>(+96.7%)</small><br><small>⏱ 60.0s | 1w</small></td><td>12 <small>(+95.6%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-5</td><td>1128 <small>(+10.1%)</small><br><small>⏱ 94.0s | 1w</small></td><td>1077 <small>(+14.2%)</small><br><small>⏱ 92.4s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-6</td><td>1248 <small>(+18.1%)</small><br><small>⏱ 92.5s | 1w</small></td><td>1288 <small>(+15.4%)</small><br><small>⏱ 93.2s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-7</td><td>103 <small>(+88.1%)</small><br><small>⏱ 90.5s | 1w</small></td><td>135 <small>(+84.5%)</small><br><small>⏱ 90.7s | 1w</small></td><td>—</td><td>—</td></tr></tbody></table>
+<details data-run="2026-06-09_11-51-11">
+          <summary><strong style='color:#4361ee'>deneme 1</strong> &nbsp;·&nbsp; Run 2026-06-09_11-51-11 &nbsp;|&nbsp; 2026-06-09T11:52:11
+            &nbsp;|&nbsp; workers=8 &nbsp;|&nbsp;
+            methods=[sa] &nbsp;·&nbsp; budget [S=1.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 1 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.5%)</small><br><small>⏱ 60.0s | 8w</small></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
         </details>
-<details>
-          <summary>Run 2026-06-07_13-41-13 &nbsp;|&nbsp; 2026-06-07T13:42:13
+<details data-run="2026-06-09_11-48-23">
+          <summary><strong style='color:#4361ee'>kband A/B testi</strong> &nbsp;·&nbsp; Run 2026-06-09_11-48-23 &nbsp;|&nbsp; 2026-06-09T11:48:35
             &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
-            methods=[sa, ils] &nbsp;·&nbsp; budget [S=1.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
-            &nbsp;|&nbsp; 14 combos</summary>
-          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>11 <small>(+88.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-2</td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.0s | 1w</small></td><td>7 <small>(+96.0%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-3</td><td>65 <small>(+69.9%)</small><br><small>⏱ 60.0s | 1w</small></td><td>64 <small>(+70.4%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-4</td><td>10 <small>(+96.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>10 <small>(+96.3%)</small><br><small>⏱ 60.0s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-5</td><td>1002 <small>(+20.2%)</small><br><small>⏱ 91.5s | 1w</small></td><td>1078 <small>(+14.1%)</small><br><small>⏱ 92.2s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-6</td><td>1247 <small>(+18.1%)</small><br><small>⏱ 92.5s | 1w</small></td><td>1311 <small>(+13.9%)</small><br><small>⏱ 93.4s | 1w</small></td><td>—</td><td>—</td></tr>
-<tr><td>Automatic-7</td><td>88 <small>(+89.9%)</small><br><small>⏱ 90.6s | 1w</small></td><td>133 <small>(+84.7%)</small><br><small>⏱ 90.6s | 1w</small></td><td>—</td><td>—</td></tr></tbody></table>
+            methods=[sa, sa-base] &nbsp;·&nbsp; budget [S=0.2m, M=8.0m, L=15.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 2 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>15 <small>(+84.2%)</small><br><small>⏱ 12.0s | 1w</small></td><td>—</td><td>—</td><td>18 <small>(+81.1%)</small><br><small>⏱ 12.0s | 1w</small></td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
         </details>
-<details>
-          <summary>Run 2026-06-05_10-23-20 &nbsp;|&nbsp; 2026-06-05T10:30:26
-            &nbsp;|&nbsp; workers=4 &nbsp;|&nbsp;
+<details data-run="2026-06-09_03-55-41">
+          <summary>Run 2026-06-09_03-55-41 &nbsp;|&nbsp; 2026-06-09T04:00:41
+            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
+            methods=[sa, ils, staged, staged-adaptive, sa-base, ils-base, staged-base, staged-adaptive-base] &nbsp;·&nbsp; budget [S=5.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 8 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-4</td><td>10 <small>(+96.3%)</small><br><small>⏱ 300.0s | 2w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 300.1s | 2w</small></td><td>15 <small>(+94.5%)</small><br><small>⏱ 300.1s | 2w</small></td><td>13 <small>(+95.2%)</small><br><small>⏱ 300.0s | 2w</small></td><td>10 <small>(+96.3%)</small><br><small>⏱ 300.2s | 2w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 300.1s | 2w</small></td><td>16 <small>(+94.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 300.1s | 2w</small></td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
+        </details>
+<details data-run="2026-06-09_03-37-24">
+          <summary>Run 2026-06-09_03-37-24 &nbsp;|&nbsp; 2026-06-09T03:38:24
+            &nbsp;|&nbsp; workers=8 &nbsp;|&nbsp;
+            methods=[sa, ils, staged, staged-adaptive] &nbsp;·&nbsp; budget [S=1.0m, M=1.5m, L=8.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 16 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.5%)</small><br><small>⏱ 60.0s | 8w</small></td><td>9 <small>(+90.5%)</small><br><small>⏱ 60.6s | 8w</small></td><td>—</td><td>—</td><td>9 <small>(+90.5%)</small><br><small>⏱ 60.0s | 8w</small></td><td>9 <small>(+90.5%)</small><br><small>⏱ 60.1s | 8w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 60.0s | 8w</small></td><td>4 <small>(+97.7%)</small><br><small>⏱ 60.0s | 8w</small></td><td>—</td><td>—</td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.1s | 8w</small></td><td>6 <small>(+96.5%)</small><br><small>⏱ 60.1s | 8w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-3</td><td>39 <small>(+81.9%)</small><br><small>⏱ 60.1s | 8w</small></td><td>37 <small>(+82.9%)</small><br><small>⏱ 60.1s | 8w</small></td><td>—</td><td>—</td><td>37 <small>(+82.9%)</small><br><small>⏱ 60.1s | 8w</small></td><td>39 <small>(+81.9%)</small><br><small>⏱ 60.1s | 8w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-4</td><td>7 <small>(+97.4%)</small><br><small>⏱ 60.1s | 8w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 60.1s | 8w</small></td><td>—</td><td>—</td><td>9 <small>(+96.7%)</small><br><small>⏱ 60.1s | 8w</small></td><td>13 <small>(+95.2%)</small><br><small>⏱ 60.5s | 8w</small></td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
+        </details>
+<details data-run="2026-06-09_03-25-36">
+          <summary>Run 2026-06-09_03-25-36 &nbsp;|&nbsp; 2026-06-09T03:25:48
+            &nbsp;|&nbsp; workers=1 &nbsp;|&nbsp;
+            methods=[sa, sa-base] &nbsp;·&nbsp; budget [S=0.2m, M=8.0m, L=15.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 2 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>13 <small>(+86.3%)</small><br><small>⏱ 12.0s | 1w</small></td><td>—</td><td>—</td><td>19 <small>(+80.0%)</small><br><small>⏱ 12.0s | 1w</small></td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
+        </details>
+<details data-run="2026-06-07_13-11-16">
+          <summary>Run 2026-06-07_13-11-16 &nbsp;|&nbsp; 2026-06-07T13:13:16
+            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
+            methods=[sa, staged, ils] &nbsp;·&nbsp; budget [S=2.0m, M=3.0m, L=15.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 21 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.5%)</small><br><small>⏱ 120.0s | 2w</small></td><td>9 <small>(+90.5%)</small><br><small>⏱ 120.0s | 2w</small></td><td>—</td><td>—</td><td>9 <small>(+90.5%)</small><br><small>⏱ 120.1s | 2w</small></td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 120.0s | 2w</small></td><td>5 <small>(+97.1%)</small><br><small>⏱ 120.0s | 2w</small></td><td>—</td><td>—</td><td>5 <small>(+97.1%)</small><br><small>⏱ 120.1s | 2w</small></td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-3</td><td>36 <small>(+83.3%)</small><br><small>⏱ 120.0s | 2w</small></td><td>39 <small>(+81.9%)</small><br><small>⏱ 120.1s | 2w</small></td><td>—</td><td>—</td><td>37 <small>(+82.9%)</small><br><small>⏱ 120.1s | 2w</small></td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-4</td><td>11 <small>(+96.0%)</small><br><small>⏱ 120.1s | 2w</small></td><td>11 <small>(+96.0%)</small><br><small>⏱ 120.0s | 2w</small></td><td>—</td><td>—</td><td>12 <small>(+95.6%)</small><br><small>⏱ 120.1s | 2w</small></td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-5</td><td>705 <small>(+43.8%)</small><br><small>⏱ 181.6s | 2w</small></td><td>565 <small>(+55.0%)</small><br><small>⏱ 182.1s | 2w</small></td><td>—</td><td>—</td><td>423 <small>(+66.3%)</small><br><small>⏱ 182.9s | 2w</small></td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-6</td><td>929 <small>(+37.7%)</small><br><small>⏱ 182.1s | 2w</small></td><td>940 <small>(+37.0%)</small><br><small>⏱ 182.6s | 2w</small></td><td>—</td><td>—</td><td>916 <small>(+38.6%)</small><br><small>⏱ 183.2s | 2w</small></td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-7</td><td>58 <small>(+93.2%)</small><br><small>⏱ 181.2s | 2w</small></td><td>42 <small>(+95.1%)</small><br><small>⏱ 181.2s | 2w</small></td><td>—</td><td>—</td><td>39 <small>(+95.5%)</small><br><small>⏱ 181.3s | 2w</small></td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
+        </details>
+<details data-run="2026-06-06_04-41-05">
+          <summary>Run 2026-06-06_04-41-05 &nbsp;|&nbsp; 2026-06-06T04:56:06
+            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
+            methods=[sa, staged, ils, staged-adaptive] &nbsp;·&nbsp; budget [S=5.0m, M=15.0m, L=25.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 20 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-5</td><td>196 <small>(+84.4%)</small><br><small>⏱ 900.7s | 2w</small></td><td>257 <small>(+79.5%)</small><br><small>⏱ 900.8s | 2w</small></td><td>—</td><td>—</td><td>171 <small>(+86.4%)</small><br><small>⏱ 901.1s | 2w</small></td><td>134 <small>(+89.3%)</small><br><small>⏱ 901.0s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-6</td><td>691 <small>(+53.7%)</small><br><small>⏱ 901.7s | 2w</small></td><td>989 <small>(+33.7%)</small><br><small>⏱ 902.4s | 2w</small></td><td>—</td><td>—</td><td>789 <small>(+47.1%)</small><br><small>⏱ 902.4s | 2w</small></td><td>633 <small>(+57.6%)</small><br><small>⏱ 902.6s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-7</td><td>45 <small>(+94.8%)</small><br><small>⏱ 567.9s | 2w</small></td><td>47 <small>(+94.5%)</small><br><small>⏱ 901.4s | 2w</small></td><td>—</td><td>—</td><td>51 <small>(+94.1%)</small><br><small>⏱ 772.5s | 2w</small></td><td>54 <small>(+93.7%)</small><br><small>⏱ 771.9s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-8</td><td>9762 <small>(+2.5%)</small><br><small>⏱ 3615.2s | 2w</small></td><td>9854 <small>(+1.6%)</small><br><small>⏱ 4809.4s | 2w</small></td><td>—</td><td>—</td><td>9535 <small>(+4.8%)</small><br><small>⏱ 3982.2s | 2w</small></td><td>9635 <small>(+3.8%)</small><br><small>⏱ 4986.7s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-9</td><td>134 <small>(+94.4%)</small><br><small>⏱ 899.9s | 2w</small></td><td>173 <small>(+92.7%)</small><br><small>⏱ 912.5s | 2w</small></td><td>—</td><td>—</td><td>162 <small>(+93.2%)</small><br><small>⏱ 911.4s | 2w</small></td><td>147 <small>(+93.8%)</small><br><small>⏱ 819.4s | 2w</small></td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
+        </details>
+<details data-run="2026-06-05_19-40-28">
+          <summary>Run 2026-06-05_19-40-28 &nbsp;|&nbsp; 2026-06-05T20:28:08
+            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
+            methods=[sa, staged, ils, staged-adaptive] &nbsp;·&nbsp; budget [S=5.0m, M=8.0m, L=15.0m] &nbsp;·&nbsp; seed 42
+            &nbsp;|&nbsp; 4 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-8</td><td>9811 <small>(+2.0%)</small><br><small>⏱ 2860.2s | 2w</small></td><td>9879 <small>(+1.3%)</small><br><small>⏱ 4578.3s | 2w</small></td><td>—</td><td>—</td><td>9645 <small>(+3.7%)</small><br><small>⏱ 3495.0s | 2w</small></td><td>9676 <small>(+3.3%)</small><br><small>⏱ 3674.4s | 2w</small></td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
+        </details>
+<details data-run="2026-06-03_04-33-59">
+          <summary>Run 2026-06-03_04-33-59 &nbsp;|&nbsp; 2026-06-03T04:38:34
+            &nbsp;|&nbsp; workers=2 &nbsp;|&nbsp;
             methods=[sa, staged, ils, staged-adaptive] &nbsp;·&nbsp; seed 42
-            &nbsp;|&nbsp; 11 combos</summary>
-          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>STAGED</th><th>STAGED-ADAPTIVE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.6%)</small><br><small>⏱ 426.4s | 4w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 480.0s | 4w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 480.4s | 4w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 480.2s | 4w</small></td></tr>
-<tr><td>Automatic-2</td><td>4 <small>(+97.7%)</small><br><small>⏱ 417.9s | 4w</small></td><td>4 <small>(+97.7%)</small><br><small>⏱ 480.0s | 4w</small></td><td>6 <small>(+96.5%)</small><br><small>⏱ 480.0s | 4w</small></td><td>5 <small>(+97.1%)</small><br><small>⏱ 480.1s | 4w</small></td></tr>
-<tr><td>Automatic-3</td><td>54 <small>(+75.0%)</small><br><small>⏱ 480.0s | 4w</small></td><td>58 <small>(+73.1%)</small><br><small>⏱ 480.4s | 4w</small></td><td>58 <small>(+73.1%)</small><br><small>⏱ 480.1s | 4w</small></td><td>—</td></tr></tbody></table>
+            &nbsp;|&nbsp; 31 combos</summary>
+          <table class='inner'><thead><tr><th>Graph</th><th>SA</th><th>ILS</th><th>ILS-BASE</th><th>SA-BASE</th><th>STAGED</th><th>STAGED-ADAPTIVE</th><th>STAGED-ADAPTIVE-BASE</th><th>STAGED-BASE</th></tr></thead><tbody><tr><td>Automatic-1</td><td>9 <small>(+90.6%)</small><br><small>⏱ 275.0s | 2w</small></td><td>9 <small>(+90.6%)</small><br><small>⏱ 300.0s | 2w</small></td><td>—</td><td>—</td><td>9 <small>(+90.6%)</small><br><small>⏱ 300.5s | 2w</small></td><td>10 <small>(+89.6%)</small><br><small>⏱ 300.0s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-2</td><td>5 <small>(+97.1%)</small><br><small>⏱ 181.5s | 2w</small></td><td>5 <small>(+97.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>—</td><td>—</td><td>8 <small>(+95.4%)</small><br><small>⏱ 300.0s | 2w</small></td><td>11 <small>(+93.6%)</small><br><small>⏱ 300.0s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-3</td><td>50 <small>(+76.9%)</small><br><small>⏱ 300.1s | 2w</small></td><td>58 <small>(+73.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>—</td><td>—</td><td>56 <small>(+74.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>50 <small>(+76.9%)</small><br><small>⏱ 300.1s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-4</td><td>7 <small>(+97.4%)</small><br><small>⏱ 300.0s | 2w</small></td><td>9 <small>(+96.7%)</small><br><small>⏱ 300.0s | 2w</small></td><td>—</td><td>—</td><td>16 <small>(+94.1%)</small><br><small>⏱ 300.0s | 2w</small></td><td>12 <small>(+95.6%)</small><br><small>⏱ 300.1s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-5</td><td>441 <small>(+64.9%)</small><br><small>⏱ 480.9s | 2w</small></td><td>518 <small>(+58.7%)</small><br><small>⏱ 481.0s | 2w</small></td><td>—</td><td>—</td><td>134 <small>(+89.3%)</small><br><small>⏱ 481.6s | 2w</small></td><td>123 <small>(+90.2%)</small><br><small>⏱ 481.6s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-6</td><td>941 <small>(+38.2%)</small><br><small>⏱ 481.5s | 2w</small></td><td>941 <small>(+38.2%)</small><br><small>⏱ 482.1s | 2w</small></td><td>—</td><td>—</td><td>927 <small>(+39.1%)</small><br><small>⏱ 484.1s | 2w</small></td><td>851 <small>(+44.1%)</small><br><small>⏱ 482.7s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-7</td><td>44 <small>(+94.9%)</small><br><small>⏱ 480.4s | 2w</small></td><td>69 <small>(+92.1%)</small><br><small>⏱ 480.4s | 2w</small></td><td>—</td><td>—</td><td>78 <small>(+91.0%)</small><br><small>⏱ 480.5s | 2w</small></td><td>63 <small>(+92.8%)</small><br><small>⏱ 480.5s | 2w</small></td><td>—</td><td>—</td></tr>
+<tr><td>Automatic-8</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+          <div class="run-charts" style="margin-top:10px"></div>
         </details>
 
 <script>
@@ -218,25 +336,41 @@ new Chart(document.getElementById('kChart'), {
   type:'bar',
   data:{ labels:GL, datasets:[{
             label: 'Baseline',
-            data: [96, 173, 216, 272, 1255, 1523, 869, 10193, 2542],
+            data: [95, 173, 216, 272, 1255, 1492, 858, 10011, 2383],
             backgroundColor: 'rgba(160,160,160,0.4)',
             borderColor: '#aaaaaa', borderWidth: 1,
         },{
             label: 'SA',
-            data: [9, 4, 54, 9, 1002, 1247, 81, null, null],
+            data: [9, 5, 36, 7, 196, 691, 44, 9762, 134],
             backgroundColor: '#4361ee99', borderColor: '#4361ee', borderWidth: 2,
         },{
             label: 'ILS',
-            data: [9, 4, 58, 10, 1077, 1288, 130, null, null],
+            data: [9, 4, 37, 9, 257, 940, 42, 9854, 173],
             backgroundColor: '#f7258599', borderColor: '#f72585', borderWidth: 2,
         },{
+            label: 'ILS-BASE',
+            data: [null, null, null, 15, null, null, null, null, null],
+            backgroundColor: '#fa9fc799', borderColor: '#fa9fc7', borderWidth: 2,
+        },{
+            label: 'SA-BASE',
+            data: [10, 6, null, 13, null, null, null, null, null],
+            backgroundColor: '#9db2f599', borderColor: '#9db2f5', borderWidth: 2,
+        },{
             label: 'STAGED',
-            data: [9, 6, 58, 17, 902, 1236, 121, null, null],
+            data: [9, 5, 37, 9, 134, 789, 39, 9535, 162],
             backgroundColor: '#7209b799', borderColor: '#7209b7', borderWidth: 2,
         },{
             label: 'STAGED-ADAPTIVE',
-            data: [9, 5, null, null, null, null, null, null, null],
+            data: [9, 6, 39, 11, 123, 633, 54, 9635, 147],
             backgroundColor: '#f4a26199', borderColor: '#f4a261', borderWidth: 2,
+        },{
+            label: 'STAGED-ADAPTIVE-BASE',
+            data: [null, null, null, 16, null, null, null, null, null],
+            backgroundColor: '#f7cfa699', borderColor: '#f7cfa6', borderWidth: 2,
+        },{
+            label: 'STAGED-BASE',
+            data: [null, null, null, 11, null, null, null, null, null],
+            backgroundColor: '#bb8fd699', borderColor: '#bb8fd6', borderWidth: 2,
         }] },
   options:{ responsive:true,
     plugins:{ legend:{labels:{color:'#333'}},
@@ -252,20 +386,36 @@ new Chart(document.getElementById('improvChart'), {
   type:'bar',
   data:{ labels:GL, datasets:[{
             label: 'SA',
-            data: [90.6, 97.7, 75.0, 96.7, 20.2, 18.1, 90.7, null, null],
+            data: [90.5, 97.1, 83.3, 97.4, 84.4, 53.7, 94.9, 2.5, 94.4],
             backgroundColor: '#4361ee99', borderColor: '#4361ee', borderWidth: 2,
         },{
             label: 'ILS',
-            data: [90.6, 97.7, 73.1, 96.3, 14.2, 15.4, 85.0, null, null],
+            data: [90.5, 97.7, 82.9, 96.7, 79.5, 37.0, 95.1, 1.6, 92.7],
             backgroundColor: '#f7258599', borderColor: '#f72585', borderWidth: 2,
         },{
+            label: 'ILS-BASE',
+            data: [null, null, null, 94.5, null, null, null, null, null],
+            backgroundColor: '#fa9fc799', borderColor: '#fa9fc7', borderWidth: 2,
+        },{
+            label: 'SA-BASE',
+            data: [89.5, 96.5, null, 95.2, null, null, null, null, null],
+            backgroundColor: '#9db2f599', borderColor: '#9db2f5', borderWidth: 2,
+        },{
             label: 'STAGED',
-            data: [90.6, 96.5, 73.1, 93.8, 28.1, 18.8, 86.1, null, null],
+            data: [90.5, 97.1, 82.9, 96.7, 89.3, 47.1, 95.5, 4.8, 93.2],
             backgroundColor: '#7209b799', borderColor: '#7209b7', borderWidth: 2,
         },{
             label: 'STAGED-ADAPTIVE',
-            data: [90.6, 97.1, null, null, null, null, null, null, null],
+            data: [90.5, 96.5, 81.9, 96.0, 90.2, 57.6, 93.7, 3.8, 93.8],
             backgroundColor: '#f4a26199', borderColor: '#f4a261', borderWidth: 2,
+        },{
+            label: 'STAGED-ADAPTIVE-BASE',
+            data: [null, null, null, 94.1, null, null, null, null, null],
+            backgroundColor: '#f7cfa699', borderColor: '#f7cfa6', borderWidth: 2,
+        },{
+            label: 'STAGED-BASE',
+            data: [null, null, null, 96.0, null, null, null, null, null],
+            backgroundColor: '#bb8fd699', borderColor: '#bb8fd6', borderWidth: 2,
         }] },
   options:{ responsive:true,
     plugins:{ legend:{labels:{color:'#333'}},
@@ -277,10 +427,49 @@ new Chart(document.getElementById('improvChart'), {
     }
   }
 });
+
+// ── per-run convergence (lazy-rendered when a Run History entry is expanded) ──
+const RUN_TS  = {"2026-06-09_12-39-20": {"Automatic-1": {"sa": [[0.0, 95, 4132], [1.0, 21, 557], [2.0, 17, 509], [3.0, 15, 459], [5.0, 15, 456], [7.0, 14, 459], [7.2, 13, 464], [8.2, 9, 440], [11.2, 9, 427], [23.2, 9, 423], [28.2, 9, 422], [33.2, 9, 420], [35.2, 9, 418]], "sa-base": [[0.0, 95, 4132], [1.0, 18, 487], [2.0, 17, 509], [3.0, 15, 459], [5.0, 15, 456], [6.0, 14, 459], [8.2, 13, 464], [9.2, 13, 463], [10.2, 12, 505], [13.2, 12, 492], [19.2, 11, 461], [20.2, 11, 460], [21.2, 11, 458], [25.2, 11, 455], [26.2, 11, 452], [27.2, 11, 451], [32.2, 11, 450], [35.2, 11, 447]], "ils": [[0.0, 95, 4132], [1.0, 18, 487], [2.0, 17, 509], [3.0, 15, 459], [5.6, 15, 456], [6.6, 14, 484], [7.2, 14, 483], [8.2, 10, 443], [9.2, 10, 433], [18.2, 9, 419], [19.2, 9, 417], [31.6, 9, 416], [33.6, 9, 414], [35.6, 9, 413]]}, "Automatic-2": {"sa": [[0.0, 173, 13208], [1.0, 19, 818], [2.0, 18, 767], [3.0, 17, 691], [4.0, 15, 604], [6.0, 13, 299], [7.2, 11, 323], [8.2, 5, 256], [9.2, 5, 254], [10.2, 5, 246], [13.2, 5, 210], [17.2, 5, 209], [24.2, 5, 207], [35.2, 5, 206]], "sa-base": [[0.0, 173, 13208], [1.0, 18, 787], [2.0, 18, 767], [3.0, 17, 691], [4.0, 15, 604], [6.0, 13, 299], [8.2, 11, 323], [9.2, 10, 485], [10.2, 9, 450], [11.2, 8, 354], [12.2, 8, 298], [13.2, 7, 351], [14.2, 7, 345], [16.2, 7, 336], [17.2, 7, 299], [19.2, 7, 297], [20.2, 7, 276], [22.2, 6, 270], [23.2, 6, 257], [24.2, 6, 255], [26.2, 6, 254], [27.2, 6, 253], [29.2, 6, 252], [31.2, 6, 251], [32.2, 6, 247], [33.2, 6, 244], [35.2, 6, 241]], "ils": [[0.0, 173, 13208], [1.0, 19, 886], [2.0, 18, 767], [3.0, 17, 691], [3.6, 17, 473], [4.6, 15, 451], [5.6, 15, 346], [6.6, 15, 345], [7.2, 14, 377], [8.2, 7, 313], [9.2, 6, 285], [10.2, 6, 284], [11.2, 6, 274], [12.2, 5, 232], [14.2, 5, 219], [15.2, 5, 195], [34.6, 5, 194], [35.6, 5, 192]]}, "Automatic-3": {"sa": [[0.0, 216, 19813], [1.0, 124, 8207], [2.0, 100, 7053], [3.0, 87, 5573], [4.0, 84, 5608], [5.0, 83, 5618], [7.2, 83, 5601], [8.2, 52, 5934], [9.2, 47, 5802], [10.2, 46, 5771], [12.2, 46, 5744], [13.2, 43, 5786], [14.2, 43, 5761], [15.2, 43, 5754], [16.2, 42, 5340], [17.2, 41, 5285], [20.2, 41, 5250]]}}, "2026-06-09_12-35-49": {"Automatic-1": {"sa": [[0.0, 95, 4132], [1.0, 18, 487], [3.0, 15, 459], [4.0, 10, 436], [6.0, 10, 432], [13.0, 10, 430], [14.0, 10, 427]], "sa-base": [[0.0, 95, 4132], [1.0, 18, 496], [2.0, 17, 509], [3.0, 15, 459], [13.0, 10, 451], [14.0, 10, 450]]}}, "2026-06-09_11-51-11": {"Automatic-1": {"sa": [[0.0, 95, 4132], [12.0, 12, 473], [42.0, 9, 412], [60.0, 9, 411]]}}, "2026-06-09_11-48-23": {"Automatic-1": {"sa": [[0.0, 95, 4132], [2.4, 27, 996], [12.0, 15, 714]], "sa-base": [[0.0, 95, 4132], [2.4, 27, 996], [12.0, 18, 761]]}}, "2026-06-09_03-55-41": {"Automatic-4": {"sa": [[0.0, 272, 35818], [30.0, 16, 1011], [60.0, 16, 870], [90.0, 11, 1176], [120.0, 11, 1153], [150.0, 11, 1115], [180.0, 11, 1112], [210.0, 10, 1140], [240.0, 10, 1081], [270.0, 10, 1070], [300.0, 10, 1061]], "ils": [[0.0, 272, 35818], [12.0, 133, 4174], [24.0, 113, 5587], [36.0, 109, 4172], [48.0, 83, 3207], [60.0, 21, 1376], [90.0, 11, 1217], [108.0, 116, 4062], [138.0, 11, 1196], [156.0, 94, 3311], [186.0, 11, 1131], [204.0, 120, 4880], [234.0, 11, 1101], [252.0, 137, 4493], [300.0, 11, 1094]], "staged": [[0.0, 272, 35818], [18.0, 27, 1100], [48.0, 15, 1041], [78.0, 15, 1024], [120.0, 15, 1018], [132.0, 15, 1008], [162.0, 11, 1167], [192.0, 10, 1169], [222.0, 10, 1093], [252.0, 10, 1056], [282.0, 10, 1041], [300.0, 10, 1037]], "staged-adaptive": [[0.0, 272, 35818], [18.0, 35, 1547], [48.0, 16, 1326], [78.0, 16, 1314], [132.0, 16, 1311], [162.0, 12, 1217], [192.0, 11, 1256], [222.0, 11, 1160], [252.0, 11, 1121], [282.0, 11, 1114], [300.0, 11, 1112]], "sa-base": [[0.0, 272, 35818], [30.0, 16, 1011], [90.0, 15, 840], [120.0, 14, 1002], [150.0, 14, 992], [180.0, 14, 961], [210.0, 13, 1198], [240.0, 13, 1170], [270.0, 13, 1145], [300.0, 13, 1129]], "ils-base": [[0.0, 272, 35818], [12.0, 143, 6074], [24.0, 138, 5714], [36.0, 104, 4891], [48.0, 116, 4430], [60.0, 21, 1418], [90.0, 16, 1615], [108.0, 115, 4765], [138.0, 16, 1513], [156.0, 100, 5206], [186.0, 15, 1590], [204.0, 117, 4301], [234.0, 15, 1523], [252.0, 81, 3745], [282.0, 15, 1471], [300.0, 15, 1467]], "staged-base": [[0.0, 272, 35818], [18.0, 32, 1162], [48.0, 11, 814], [300.0, 11, 804]], "staged-adaptive-base": [[0.0, 272, 35818], [18.0, 33, 1178], [48.0, 16, 1157], [90.0, 16, 1153], [300.0, 16, 1145]]}}, "2026-06-09_03-37-24": {"Automatic-1": {"sa": [[0.0, 95, 4132], [12.0, 12, 473], [42.0, 9, 417], [60.0, 9, 413]], "ils": [[0.0, 95, 4132], [6.0, 36, 817], [12.0, 13, 462], [24.0, 29, 659], [36.0, 36, 716], [48.0, 42, 941], [60.0, 9, 412]], "staged": [[0.0, 95, 4132], [3.6, 16, 468], [60.0, 9, 405]], "staged-adaptive": [[0.0, 95, 4132], [3.6, 16, 448], [26.4, 10, 403], [56.4, 9, 415], [60.0, 9, 414]]}, "Automatic-2": {"sa": [[0.0, 173, 13246], [12.0, 9, 217], [42.0, 5, 139], [60.0, 5, 134]], "ils": [[0.0, 173, 13246], [6.0, 46, 1334], [12.0, 10, 283], [24.0, 42, 669], [36.0, 44, 937], [48.0, 45, 879], [60.0, 4, 115]], "staged": [[0.0, 173, 13246], [3.6, 25, 611], [26.4, 10, 411], [60.0, 6, 248]], "staged-adaptive": [[0.0, 173, 13246], [3.6, 29, 582], [18.0, 10, 307], [26.4, 10, 306], [56.4, 6, 208], [60.0, 6, 207]]}, "Automatic-3": {"sa": [[0.0, 216, 19817], [12.0, 78, 5341], [42.0, 39, 5114], [60.0, 39, 4848]], "ils": [[0.0, 216, 19817], [6.0, 114, 6810], [12.0, 81, 5325], [24.0, 131, 7594], [36.0, 107, 6860], [48.0, 115, 7545], [60.0, 37, 4591]], "staged": [[0.0, 216, 19817], [3.6, 128, 7713], [26.4, 60, 5220], [56.4, 38, 4588], [60.0, 37, 4537]], "staged-adaptive": [[0.0, 216, 19817], [3.6, 126, 8092], [26.4, 64, 4982], [56.4, 39, 4996], [60.0, 39, 4926]]}, "Automatic-4": {"sa": [[0.0, 272, 35818], [12.0, 26, 1786], [42.0, 7, 738], [60.0, 7, 714]], "ils": [[0.0, 272, 35818], [6.0, 113, 7064], [12.0, 31, 1914], [24.0, 91, 3930], [36.0, 102, 3981], [48.0, 99, 4433], [59.9, 13, 1423], [60.0, 11, 1299]], "staged": [[0.0, 272, 35818], [3.6, 134, 8705], [26.4, 17, 1312], [60.0, 9, 916]], "staged-adaptive": [[0.0, 272, 35818], [3.6, 129, 8814], [18.0, 19, 1465], [26.4, 19, 1464], [60.0, 13, 1525]]}}, "2026-06-09_03-25-36": {"Automatic-1": {"sa": [[0.0, 95, 4132], [2.4, 27, 996], [12.0, 13, 657]], "sa-base": [[0.0, 95, 4132], [2.4, 27, 996], [12.0, 19, 747]]}}, "2026-06-07_13-11-16": {"Automatic-1": {"sa": [[0.0, 95, 4132], [24.0, 11, 450], [54.0, 9, 416], [120.0, 9, 410]], "staged": [[0.0, 95, 4132], [7.2, 16, 466], [36.0, 13, 466], [52.8, 13, 442], [82.8, 9, 420], [112.8, 9, 416], [120.0, 9, 415]], "ils": [[0.0, 95, 4132], [12.0, 51, 1055], [24.0, 13, 413], [43.2, 51, 1066], [62.4, 52, 1041], [81.6, 48, 977], [100.8, 40, 704], [120.0, 9, 414]]}, "Automatic-2": {"sa": [[0.0, 173, 13246], [24.0, 6, 157], [54.0, 5, 186], [114.0, 5, 167], [120.0, 5, 166]], "staged": [[0.0, 173, 13246], [7.2, 17, 399], [52.8, 9, 360], [82.8, 5, 205], [120.0, 5, 195]], "ils": [[0.0, 173, 13246], [12.0, 62, 1450], [24.0, 7, 209], [43.2, 62, 1499], [62.4, 55, 1642], [81.6, 58, 1343], [100.8, 73, 1317], [120.0, 5, 175]]}, "Automatic-3": {"sa": [[0.0, 216, 19817], [24.0, 81, 5618], [54.0, 38, 4695], [84.0, 37, 4574], [120.0, 36, 4418]], "staged": [[0.0, 216, 19817], [7.2, 92, 5222], [52.8, 51, 4336], [82.8, 39, 4898], [120.0, 37, 4690]], "ils": [[0.0, 216, 19817], [12.0, 139, 7589], [24.0, 74, 5298], [43.2, 130, 6902], [62.4, 142, 7942], [81.6, 133, 7231], [100.8, 138, 6449], [120.0, 39, 4762]]}, "Automatic-4": {"sa": [[0.0, 272, 35818], [24.0, 21, 1288], [54.0, 11, 1203], [84.0, 11, 1196], [114.0, 11, 1143], [120.0, 11, 1139]], "staged": [[0.0, 272, 35818], [7.2, 59, 2487], [52.8, 16, 1212], [82.8, 12, 1318], [112.8, 12, 1296], [120.0, 12, 1290]], "ils": [[0.0, 272, 35818], [12.0, 110, 5516], [24.0, 24, 1619], [43.2, 115, 3576], [62.4, 115, 4401], [81.6, 113, 4393], [100.8, 73, 3542], [120.0, 11, 1168]]}, "Automatic-5": {"sa": [[0.0, 1255, 729412], [30.0, 1091, 510226], [36.0, 1086, 503845], [66.0, 838, 490565], [96.0, 782, 477345], [126.0, 745, 450933], [156.0, 715, 462599], [180.0, 705, 460385]], "staged": [[0.0, 1255, 729412], [10.8, 1212, 647990], [43.8, 1055, 531537], [54.0, 1018, 486237], [79.2, 926, 340662], [109.2, 534, 318686], [139.2, 471, 293581], [169.2, 432, 279461], [180.0, 423, 275506]], "ils": [[0.0, 1255, 729412], [12.0, 1173, 590884], [34.2, 1114, 512479], [63.0, 1040, 449685], [91.8, 1041, 464872], [120.6, 994, 444036], [149.4, 1033, 416462], [149.5, 1068, 405268], [175.8, 670, 458131], [176.3, 565, 349648]]}, "Automatic-6": {"sa": [[0.0, 1492, 767086], [36.0, 1250, 650344], [66.0, 1079, 728590], [96.0, 1029, 715518], [126.0, 984, 701739], [156.0, 955, 690435], [180.0, 929, 683661]], "staged": [[0.0, 1492, 767086], [10.8, 1329, 713474], [41.8, 1254, 676814], [54.0, 1225, 666221], [79.2, 1185, 600403], [109.2, 1059, 703013], [139.2, 992, 690885], [169.2, 930, 670578], [180.0, 916, 667861]], "ils": [[0.0, 1492, 767086], [12.0, 1314, 734306], [24.0, 1328, 706943], [34.0, 1261, 655034], [62.7, 1288, 639698], [62.8, 1358, 769823], [91.5, 1386, 787135], [120.3, 1367, 778253], [120.4, 1395, 738857], [149.1, 1395, 774283], [149.2, 1340, 752530], [174.8, 940, 688036]]}, "Automatic-7": {"sa": [[0.0, 858, 310292], [30.0, 104, 17774], [36.0, 99, 16881], [66.0, 66, 27761], [96.0, 60, 25468], [126.0, 59, 24384], [156.0, 58, 23978], [180.0, 58, 23454]], "staged": [[0.0, 858, 310292], [10.8, 554, 128542], [40.8, 97, 21859], [54.0, 91, 20431], [79.2, 91, 20353], [109.2, 43, 18635], [139.2, 40, 17040], [169.2, 39, 16368], [180.0, 39, 16181]], "ils": [[0.0, 858, 310292], [12.0, 478, 75126], [24.0, 382, 48261], [35.9, 92, 16784], [64.7, 393, 54290], [93.5, 397, 53819], [122.3, 358, 42681], [151.1, 312, 42594], [179.8, 42, 17416]]}}, "2026-06-06_04-41-05": {"Automatic-5": {"sa": [[0.0, 1255, 729412], [30.0, 1090, 504726], [60.0, 1015, 409978], [90.0, 825, 304994], [120.0, 671, 222322], [150.0, 575, 160588], [180.0, 511, 111065], [210.0, 390, 172847], [240.0, 364, 169103], [270.0, 356, 164081], [300.0, 332, 153414], [330.0, 312, 149600], [360.0, 309, 148194], [390.0, 287, 148081], [420.0, 282, 147933], [450.0, 263, 144939], [480.0, 253, 143128], [510.0, 249, 138486], [540.0, 243, 129530], [570.0, 237, 128326], [600.0, 230, 126028], [630.0, 225, 125165], [660.0, 221, 119982], [720.0, 212, 117707], [750.0, 206, 113027], [780.0, 202, 113832], [810.0, 199, 111999], [840.0, 199, 109894], [900.0, 196, 108711]], "staged": [[0.0, 1255, 729412], [30.0, 1124, 492634], [32.0, 1107, 522476], [54.0, 952, 369262], [84.0, 547, 164670], [114.0, 256, 87710], [145.0, 211, 74316], [175.0, 192, 67692], [205.0, 176, 65295], [235.0, 169, 64531], [265.0, 166, 62985], [270.0, 166, 62604], [300.0, 165, 62748], [330.0, 165, 62581], [360.0, 163, 58688], [390.0, 161, 56784], [396.0, 159, 57056], [426.0, 149, 79046], [456.0, 146, 76988], [516.0, 140, 75193], [546.0, 139, 74589], [636.0, 137, 73481], [666.0, 137, 73308], [756.0, 134, 73937], [846.0, 134, 73905], [900.0, 134, 73882]], "ils": [[0.0, 1255, 729412], [30.0, 1076, 486554], [36.0, 1103, 539710], [66.0, 943, 365610], [72.0, 983, 382771], [102.0, 751, 263183], [108.0, 873, 314548], [138.0, 571, 190066], [144.0, 867, 320570], [178.2, 496, 152517], [178.3, 484, 145920], [208.2, 426, 200577], [208.3, 403, 181984], [238.2, 395, 194734], [268.2, 371, 181510], [298.2, 356, 178654], [322.2, 336, 172085], [322.3, 690, 212480], [352.2, 345, 178501], [442.2, 312, 166579], [466.2, 307, 162397], [466.3, 708, 215392], [496.2, 340, 180829], [586.2, 286, 149829], [610.2, 279, 148756], [610.3, 728, 215218], [640.2, 340, 180814], [730.2, 269, 145447], [754.2, 269, 145248], [754.3, 703, 191999], [784.2, 329, 165064], [897.5, 264, 143746], [897.6, 257, 136473]]}, "Automatic-6": {"sa": [[0.0, 1492, 767086], [30.0, 1250, 650344], [60.0, 1181, 590233], [90.0, 1143, 577385], [120.0, 1134, 572931], [150.0, 1110, 557308], [180.0, 1075, 542686], [210.0, 1026, 658998], [240.0, 989, 642841], [270.0, 958, 644536], [300.0, 935, 638686], [360.0, 922, 630131], [390.0, 898, 627508], [420.0, 883, 620943], [450.0, 873, 611735], [480.0, 868, 609510], [510.0, 847, 609333], [540.0, 831, 606361], [570.0, 817, 603142], [600.0, 813, 595540], [630.0, 796, 598750], [660.0, 780, 592693], [690.0, 766, 586110], [720.0, 761, 590772], [750.0, 740, 573993], [780.0, 726, 570721], [810.0, 720, 565235], [840.0, 720, 564037], [870.0, 700, 557212], [900.0, 691, 555603]], "staged": [[0.0, 1492, 767086], [30.0, 1268, 675098], [54.0, 1286, 643370], [84.0, 1178, 620601], [114.0, 1164, 595976], [144.0, 1145, 610993], [145.0, 1136, 578943], [175.0, 1112, 570900], [205.0, 1101, 604113], [206.0, 1101, 583544], [236.0, 1081, 596559], [266.0, 1075, 589459], [270.0, 1075, 588466], [300.0, 1063, 523288], [330.0, 1041, 507153], [360.0, 989, 491148], [396.0, 935, 476178], [426.0, 874, 610527], [456.0, 830, 598836], [486.0, 808, 582568], [516.0, 789, 580551], [546.0, 776, 572148], [576.0, 747, 571952], [606.0, 711, 562929], [636.0, 689, 557843], [666.0, 676, 554227], [726.0, 675, 554645], [756.0, 656, 545098], [786.0, 648, 539939], [876.0, 639, 529327], [900.0, 633, 543640]], "ils": [[0.0, 1492, 767086], [30.0, 1250, 650344], [36.0, 1305, 691419], [66.0, 1224, 596817], [72.0, 1243, 654262], [102.0, 1167, 592471], [108.0, 1276, 652811], [138.0, 1130, 575416], [144.0, 1237, 649210], [177.2, 1119, 572404], [207.2, 1070, 676418], [237.0, 1056, 679420], [237.2, 1050, 693753], [267.0, 1039, 665089], [267.2, 1022, 681576], [297.0, 1021, 662534], [321.0, 1002, 675331], [321.2, 1321, 731097], [351.0, 1014, 662299], [465.0, 989, 675285], [465.2, 1341, 726868], [495.0, 1014, 662299], [609.0, 989, 675285], [609.2, 1332, 732368], [639.0, 1014, 662299], [753.0, 989, 675285], [753.2, 1270, 724693], [783.0, 1014, 662299], [893.6, 989, 675285]]}, "Automatic-7": {"sa": [[0.0, 858, 310292], [30.0, 104, 17774], [60.0, 93, 15591], [90.0, 76, 12651], [120.0, 74, 11769], [180.0, 74, 11324], [210.0, 67, 22965], [240.0, 63, 22942], [270.0, 59, 21375], [300.0, 55, 20665], [330.0, 52, 18680], [360.0, 51, 18224], [390.0, 49, 18179], [420.0, 47, 17193], [450.0, 46, 16897], [480.0, 45, 16795], [570.0, 45, 16167], [900.0, 45, 15648]], "staged": [[0.0, 858, 310292], [30.0, 179, 29776], [54.0, 142, 19389], [84.0, 61, 13525], [114.0, 58, 12908], [144.0, 58, 12741], [174.0, 58, 12673], [204.0, 58, 12516], [234.0, 58, 12499], [270.0, 58, 12433], [300.0, 58, 12412], [330.0, 58, 12381], [360.0, 58, 12290], [396.0, 58, 12217], [426.0, 58, 12215], [576.0, 58, 12164], [606.0, 58, 12163], [636.0, 56, 18450], [666.0, 56, 17497], [696.0, 55, 17983], [726.0, 55, 17649], [786.0, 55, 17190], [900.0, 54, 16856]], "ils": [[0.0, 858, 310292], [30.0, 104, 17774], [36.0, 374, 47539], [66.0, 82, 15845], [72.0, 353, 41923], [102.0, 78, 15702], [108.0, 349, 40131], [138.0, 78, 15358], [144.0, 292, 36962], [174.0, 76, 15304], [179.9, 76, 15217], [209.9, 72, 25078], [239.9, 68, 24841], [269.9, 65, 23887], [299.9, 55, 20901], [323.9, 368, 52126], [353.9, 52, 18994], [383.9, 52, 18593], [413.9, 52, 18321], [443.9, 51, 19196], [467.9, 401, 57152], [497.9, 50, 18293], [527.9, 50, 18085], [557.9, 49, 18726], [587.9, 49, 18224], [611.9, 408, 49054], [641.9, 49, 17539], [671.9, 49, 17274], [701.9, 49, 17122], [731.9, 48, 18390], [755.9, 353, 47113], [785.9, 48, 17357], [815.9, 48, 17178], [845.9, 48, 16913], [875.9, 47, 17494], [899.7, 47, 17189]]}, "Automatic-8": {"sa": [[0.0, 10011, 38421702], [31.0, 9988, 38259637], [61.0, 9972, 38221566], [91.0, 9954, 37994500], [121.0, 9953, 37977711], [122.0, 9938, 37894022], [152.0, 9926, 37815058], [182.0, 9912, 37682838], [300.0, 9898, 37583593], [330.0, 9883, 37560721], [390.0, 9872, 37580408], [420.0, 9863, 37573725], [450.0, 9859, 37570079], [451.0, 9851, 37547237], [481.0, 9843, 37517746], [511.0, 9837, 37517843], [541.0, 9834, 37504188], [571.0, 9834, 37495520], [601.0, 9832, 37512090], [631.0, 9829, 37500417], [661.0, 9825, 37490895], [691.0, 9823, 37484429], [721.0, 9821, 37475062], [751.0, 9821, 37468640], [781.0, 9821, 37468278], [841.0, 9820, 37468493], [871.0, 9818, 37471208], [901.0, 9814, 37574116], [932.0, 9811, 37470680], [992.0, 9811, 37469978], [1022.0, 9809, 37467086], [1052.0, 9807, 37470123], [1082.0, 9806, 37470623], [1365.0, 9803, 37469420], [1376.0, 9801, 37466513], [1396.0, 9798, 37562792], [1426.0, 9787, 37452267], [1456.0, 9774, 37438987], [1486.0, 9764, 37415866], [1496.0, 9762, 37396526], [1500.0, 9762, 37394927]], "staged": [[0.0, 10011, 38421702], [30.0, 9983, 38221271], [31.0, 9982, 38228313], [63.0, 9963, 37968753], [67.0, 9959, 37946274], [90.0, 9938, 37709219], [121.0, 9915, 37494612], [124.0, 9899, 37372335], [155.0, 9875, 37258720], [161.0, 9845, 37101509], [192.0, 9822, 37010908], [195.0, 9807, 36886465], [485.0, 9804, 36826294], [515.0, 9800, 36803726], [545.0, 9787, 36732694], [576.0, 9784, 36631978], [606.0, 9763, 36469420], [636.0, 9753, 36383690], [666.0, 9741, 36280062], [695.0, 9741, 36278736], [725.0, 9727, 36284362], [755.0, 9721, 36286174], [785.0, 9715, 36292583], [816.0, 9707, 36296782], [846.0, 9703, 36281397], [876.0, 9699, 36288970], [906.0, 9689, 36277811], [936.0, 9683, 36261838], [966.0, 9672, 36269642], [996.0, 9671, 36258028], [1026.0, 9664, 36256139], [1056.0, 9662, 36256631], [1086.0, 9659, 36265062], [1116.0, 9659, 36263385], [1146.0, 9653, 36275702], [1176.0, 9650, 36275462], [1206.0, 9650, 36265767], [1236.0, 9649, 36266620], [1267.0, 9646, 36270617], [1297.0, 9645, 36266085], [1327.0, 9644, 36260784], [1357.0, 9644, 36257754], [1387.0, 9642, 36258647], [1417.0, 9642, 36255034], [1447.0, 9640, 36262033], [1477.0, 9638, 36261121], [1507.0, 9638, 36257278], [1535.0, 9635, 36259492]], "ils": [[0.0, 10011, 38421702], [31.0, 9988, 38258450], [60.0, 9972, 38221566], [90.0, 9965, 38209969], [120.0, 9944, 38218246], [150.0, 9928, 38206313], [180.0, 9922, 38188873], [210.0, 9920, 38174431], [241.0, 9914, 38167660], [271.0, 9910, 38153232], [300.0, 9876, 40057854], [330.0, 9866, 40049482], [374.3, 9860, 40032792], [381.4, 9854, 40020406]]}, "Automatic-9": {"sa": [[0.0, 2383, 2274362], [30.0, 1856, 1162137], [60.0, 1279, 672351], [90.0, 852, 415872], [120.0, 503, 228749], [150.0, 433, 170121], [180.0, 312, 125334], [210.0, 309, 199130], [240.0, 307, 243374], [270.0, 306, 253353], [300.0, 301, 257127], [330.0, 292, 272490], [360.0, 284, 276857], [390.0, 273, 273467], [420.0, 267, 273887], [450.0, 254, 263799], [480.0, 241, 267953], [510.0, 220, 248663], [540.0, 209, 238496], [570.0, 198, 224252], [600.0, 179, 205757], [630.0, 170, 193531], [660.0, 163, 181770], [690.0, 158, 175783], [720.0, 153, 167932], [750.0, 150, 162340], [780.0, 145, 156053], [810.0, 140, 151243], [840.0, 138, 148423], [870.0, 136, 143703], [900.0, 134, 139409]], "staged": [[0.0, 2383, 2274362], [30.0, 1826, 1194388], [54.0, 1568, 885534], [84.0, 804, 421917], [114.0, 372, 173684], [144.0, 234, 103349], [174.0, 186, 66105], [204.0, 175, 61952], [234.0, 170, 57896], [264.0, 167, 55438], [270.0, 167, 55010], [300.0, 167, 54971], [330.0, 167, 54770], [360.0, 167, 53767], [396.0, 167, 51040], [486.0, 167, 51024], [516.0, 164, 102227], [546.0, 161, 110179], [576.0, 160, 113408], [606.0, 156, 115760], [636.0, 153, 117668], [666.0, 152, 115747], [696.0, 152, 113944], [726.0, 150, 113575], [756.0, 148, 112433], [786.0, 148, 110066], [900.0, 147, 108372]], "ils": [[0.0, 2383, 2274362], [30.0, 1856, 1165375], [36.0, 1848, 1305349], [66.0, 1175, 655797], [72.0, 1574, 949971], [102.0, 704, 339086], [108.0, 1308, 644269], [138.0, 449, 193848], [144.0, 1188, 459817], [174.0, 396, 158222], [176.9, 396, 158136], [206.9, 366, 334484], [236.9, 354, 344798], [266.9, 342, 357369], [296.9, 327, 352968], [320.8, 343, 353750], [320.9, 1335, 643147], [350.9, 314, 341936], [380.9, 305, 331668], [410.9, 299, 325841], [440.9, 291, 317837], [464.8, 302, 332802], [464.9, 1277, 622698], [494.9, 275, 300007], [524.9, 271, 299026], [554.9, 257, 286268], [584.9, 243, 273377], [608.8, 259, 292107], [608.9, 1214, 518576], [638.9, 231, 261240], [668.9, 226, 256879], [698.9, 212, 241117], [728.9, 205, 232666], [752.8, 238, 265714], [752.9, 1214, 488142], [782.9, 195, 217253], [812.9, 190, 213842], [842.9, 186, 210953], [895.0, 179, 203731], [895.1, 173, 196493]]}}, "2026-06-05_19-40-28": {"Automatic-8": {"sa": [[0.0, 10011, 38421702], [32.0, 9984, 38239408], [61.0, 9970, 38123914], [62.0, 9964, 38049014], [91.0, 9953, 37971017], [92.0, 9938, 37891907], [121.0, 9926, 37808972], [122.0, 9925, 37755377], [152.0, 9906, 37611216], [180.0, 9898, 37583593], [210.0, 9883, 37560721], [240.0, 9869, 37572830], [270.0, 9863, 37568672], [301.0, 9857, 37575834], [331.0, 9851, 37538450], [361.0, 9846, 37519311], [391.0, 9837, 37517843], [421.0, 9836, 37506566], [481.0, 9834, 37495520], [511.0, 9829, 37504989], [541.0, 9826, 37491160], [571.0, 9824, 37487174], [601.0, 9823, 37478406], [632.0, 9821, 37472139], [662.0, 9821, 37468640], [692.0, 9821, 37468278], [752.0, 9820, 37468493], [782.0, 9818, 37471208], [812.0, 9817, 37576596], [842.0, 9814, 37574116], [900.0, 9811, 37469978]], "staged": [[0.0, 10011, 38421702], [32.0, 9990, 38275769], [35.0, 9977, 38173091], [54.0, 9957, 37993396], [88.0, 9920, 37675692], [120.0, 9887, 37506593], [158.0, 9839, 37271182], [414.0, 9829, 37211606], [445.0, 9825, 36882122], [446.0, 9817, 37058431], [475.0, 9811, 36747561], [476.0, 9793, 36910986], [505.0, 9788, 36591243], [506.0, 9781, 36799401], [536.0, 9771, 36448391], [540.0, 9769, 36420187], [570.0, 9757, 36633139], [630.0, 9745, 36606463], [660.0, 9737, 36601915], [690.0, 9725, 36581222], [720.0, 9720, 36579978], [721.0, 9714, 36599507], [751.0, 9708, 36587652], [781.0, 9703, 36585390], [811.0, 9702, 36578792], [841.0, 9701, 36575432], [871.0, 9699, 36557108], [901.0, 9697, 36563343], [931.0, 9689, 36561010], [961.0, 9684, 36559150], [991.0, 9682, 36561908], [1021.0, 9678, 36564981], [1044.0, 9676, 36566890]], "ils": [[0.0, 10011, 38421702], [32.0, 9990, 38296822], [36.0, 9990, 38267039], [67.0, 9945, 38259294], [97.0, 9926, 38267211], [127.0, 9898, 38253749], [159.0, 9883, 38226557], [180.0, 9879, 38220254]]}}, "2026-06-03_04-33-59": {"Automatic-1": {"sa": [[0.0, 96, 4109], [30.0, 10, 404], [300.0, 9, 402]], "staged": [[0.0, 96, 4109], [18.0, 15, 467], [48.0, 13, 465], [90.0, 13, 462], [120.0, 11, 410], [162.0, 11, 393], [192.0, 10, 446], [222.0, 10, 430], [252.0, 10, 426], [282.0, 10, 418], [300.0, 10, 417]], "ils": [[0.0, 96, 4109], [12.0, 42, 877], [24.0, 33, 656], [36.0, 50, 1037], [48.0, 52, 972], [90.0, 10, 415], [108.0, 51, 1047], [138.0, 10, 414], [156.0, 48, 1015], [186.0, 10, 413], [204.0, 46, 1016], [234.0, 10, 413], [252.0, 50, 1092], [282.0, 10, 410], [300.0, 9, 415]]}, "Automatic-2": {"sa": [[0.0, 173, 13289], [30.0, 6, 147], [60.0, 6, 142], [90.0, 5, 200], [120.0, 5, 179], [150.0, 5, 168], [300.0, 5, 164]], "staged": [[0.0, 173, 13289], [18.0, 17, 444], [48.0, 11, 431], [120.0, 11, 430], [300.0, 11, 429]], "ils": [[0.0, 173, 13289], [12.0, 62, 1100], [24.0, 50, 861], [36.0, 48, 1053], [48.0, 53, 1154], [60.0, 7, 192], [90.0, 5, 211], [108.0, 41, 787], [138.0, 5, 194], [156.0, 64, 1505], [186.0, 5, 185], [204.0, 55, 878], [234.0, 5, 184], [252.0, 63, 1203], [300.0, 5, 184]]}, "Automatic-3": {"sa": [[0.0, 216, 19817], [30.0, 76, 4982], [60.0, 60, 4656], [90.0, 59, 4777], [150.0, 59, 4771], [180.0, 59, 4748], [210.0, 55, 6141], [240.0, 50, 5527], [270.0, 50, 5435], [300.0, 50, 5241]], "staged": [[0.0, 216, 19817], [18.0, 80, 4624], [48.0, 50, 4015], [300.0, 50, 4005]], "ils": [[0.0, 216, 19817], [12.0, 134, 7374], [24.0, 125, 8102], [36.0, 126, 6970], [48.0, 114, 5979], [60.0, 71, 5086], [90.0, 62, 6456], [108.0, 140, 9138], [138.0, 62, 6313], [156.0, 132, 7884], [186.0, 58, 5941], [204.0, 138, 7761], [234.0, 58, 5893], [252.0, 130, 8278], [282.0, 58, 5884], [300.0, 58, 5863]]}, "Automatic-4": {"sa": [[0.0, 272, 35817], [30.0, 12, 823], [90.0, 9, 559], [120.0, 8, 874], [150.0, 8, 787], [180.0, 8, 706], [210.0, 8, 693], [270.0, 8, 690], [300.0, 7, 684]], "staged": [[0.0, 272, 35817], [18.0, 39, 949], [90.0, 12, 900], [252.0, 12, 892], [300.0, 12, 891]], "ils": [[0.0, 272, 35817], [12.0, 98, 4037], [24.0, 112, 5586], [36.0, 85, 3662], [48.0, 115, 3440], [60.0, 13, 808], [90.0, 9, 863], [108.0, 93, 3621], [138.0, 9, 802], [156.0, 92, 3021], [186.0, 9, 781], [204.0, 108, 4082], [234.0, 9, 766], [252.0, 122, 4571], [282.0, 9, 746], [300.0, 9, 741]]}, "Automatic-5": {"sa": [[0.0, 1255, 729412], [30.0, 1076, 486263], [60.0, 940, 384382], [90.0, 772, 280639], [96.0, 721, 266055], [126.0, 631, 310471], [156.0, 587, 300311], [186.0, 568, 302776], [216.0, 550, 294817], [246.0, 537, 290398], [276.0, 524, 288373], [306.0, 520, 289144], [336.0, 510, 282738], [366.0, 478, 253870], [396.0, 465, 252139], [426.0, 456, 251001], [456.0, 449, 245680], [480.0, 441, 236246]], "staged": [[0.0, 1255, 729412], [28.8, 1101, 506369], [58.8, 798, 302281], [88.8, 578, 194731], [89.8, 564, 177304], [118.8, 468, 152531], [119.8, 400, 118752], [144.0, 336, 101736], [174.0, 224, 57718], [211.2, 178, 53127], [241.2, 143, 72924], [271.2, 140, 72040], [301.2, 139, 71441], [331.2, 132, 68949], [361.2, 127, 67656], [391.2, 125, 67506], [421.2, 125, 63708], [451.2, 125, 63564], [480.0, 123, 65058]], "ils": [[0.0, 1255, 729412], [19.2, 1157, 534436], [38.4, 1080, 457365], [57.6, 999, 423746], [76.8, 920, 356606], [94.2, 813, 266355], [124.2, 686, 287324], [154.2, 644, 278876], [170.9, 660, 286465], [171.0, 791, 319852], [201.0, 628, 277309], [230.9, 606, 276891], [247.7, 601, 271322], [247.8, 867, 359320], [277.7, 594, 269598], [324.5, 591, 270191], [324.6, 776, 292196], [354.5, 594, 269598], [384.5, 587, 263774], [401.3, 535, 247932], [401.4, 873, 325246], [431.3, 594, 269598], [477.0, 518, 242538]]}, "Automatic-6": {"sa": [[0.0, 1523, 805495], [30.0, 1254, 627924], [60.0, 1201, 580779], [96.0, 1195, 557796], [126.0, 1130, 718015], [156.0, 1102, 715685], [186.0, 1082, 702007], [216.0, 1066, 701881], [246.0, 1052, 699605], [306.0, 1044, 694805], [336.0, 1024, 693739], [366.0, 998, 677960], [396.0, 984, 673108], [426.0, 972, 669326], [456.0, 964, 682623], [480.0, 941, 674607]], "staged": [[0.0, 1523, 805495], [28.8, 1319, 672565], [58.8, 1212, 647526], [59.8, 1203, 632878], [88.8, 1179, 628767], [119.8, 1144, 610996], [120.8, 1127, 594219], [144.0, 1125, 614158], [174.0, 1100, 557063], [204.0, 1076, 540760], [211.2, 1076, 538965], [241.2, 1034, 673619], [271.2, 1004, 670615], [301.2, 980, 656361], [331.2, 970, 658411], [361.2, 948, 648367], [391.2, 932, 637194], [421.2, 896, 630152], [451.2, 869, 611492], [480.0, 851, 601741]], "ils": [[0.0, 1523, 805495], [19.2, 1338, 728335], [38.4, 1352, 708373], [57.6, 1313, 690721], [76.8, 1254, 680572], [93.2, 1219, 581212], [123.2, 1116, 728414], [153.2, 1055, 699870], [169.7, 1151, 734299], [170.0, 1307, 741202], [200.0, 1030, 686858], [230.0, 1018, 720600], [246.5, 1141, 732696], [246.8, 1295, 755359], [276.8, 984, 705229], [306.8, 982, 722710], [323.3, 1141, 732696], [323.6, 1356, 753858], [383.6, 941, 691398], [400.1, 1126, 742795], [400.4, 1353, 808467], [474.1, 941, 691398]]}, "Automatic-7": {"sa": [[0.0, 869, 318517], [30.0, 139, 26525], [60.0, 120, 20366], [90.0, 90, 13764], [96.0, 81, 13128], [126.0, 71, 26621], [156.0, 66, 24281], [186.0, 60, 22687], [216.0, 57, 20943], [246.0, 54, 20241], [276.0, 51, 19433], [306.0, 48, 18548], [336.0, 48, 17464], [366.0, 47, 17288], [396.0, 46, 16973], [426.0, 44, 16542], [456.0, 44, 16265], [480.0, 44, 16035]], "staged": [[0.0, 869, 318517], [28.8, 217, 30877], [58.8, 65, 13217], [88.8, 65, 13022], [144.0, 65, 12929], [174.0, 65, 12926], [204.0, 65, 12922], [421.2, 65, 12915], [451.2, 65, 12914], [480.0, 63, 18458]], "ils": [[0.0, 869, 318517], [19.2, 382, 59695], [38.4, 348, 48493], [57.6, 407, 50404], [76.8, 346, 58780], [95.8, 147, 25491], [125.8, 104, 20060], [155.8, 84, 31339], [172.6, 77, 28926], [172.7, 383, 52530], [202.6, 93, 33528], [232.6, 77, 27748], [249.4, 76, 28665], [249.5, 390, 59689], [279.4, 90, 32684], [309.4, 74, 26560], [326.2, 74, 25136], [326.3, 364, 60695], [356.2, 90, 31236], [386.2, 72, 25867], [403.0, 72, 24720], [403.1, 383, 53476], [433.0, 87, 31055], [463.0, 69, 25595], [463.1, 69, 24594], [479.7, 69, 24250]]}, "Automatic-8": {"sa": [[0.0, 10193, 45562332], [31.0, 10166, 45386902], [61.0, 10132, 45330611], [91.0, 10116, 44994918], [92.0, 10089, 44651183], [180.0, 10074, 44416371], [210.0, 10041, 44352315], [240.0, 10017, 44323465], [270.0, 9992, 44320727], [330.0, 9992, 44319503], [331.0, 9992, 44316067], [519.0, 9991, 44316518], [549.0, 9983, 44295710], [579.0, 9979, 44261261], [609.0, 9978, 44258227], [639.0, 9975, 44254980], [669.0, 9971, 44254067], [900.0, 9970, 44252149]], "staged": [[0.0, 10193, 45562332], [40.0, 10159, 45152038], [54.0, 10143, 44871125], [85.0, 10116, 44578414], [119.0, 10082, 44168005], [128.0, 10069, 44124374], [150.0, 10066, 44021317], [166.0, 10031, 43823782], [456.0, 9995, 43529516]], "ils": [[0.0, 10193, 45562332], [31.0, 10132, 45330611], [36.0, 10127, 45215591], [66.0, 10113, 45161482], [97.0, 10104, 45129047], [127.0, 10098, 45104639], [156.0, 10098, 45099203], [157.0, 10095, 45171796], [180.0, 10094, 45168355]]}}};
+const MCOLORS = {"sa": "#4361ee", "staged": "#7209b7", "ils": "#f72585", "staged-adaptive": "#f4a261", "sa-base": "#9db2f5", "staged-base": "#bb8fd6", "ils-base": "#fa9fc7", "staged-adaptive-base": "#f7cfa6"};
+const DCOLORS = ["#4361ee", "#7209b7", "#f72585", "#f4a261", "#4cc9f0"];
+function _colorFor(m,i){ return MCOLORS[m] || DCOLORS[i % DCOLORS.length]; }
+function _mkLine(cid, datasets, title, ylabel){
+  const el = document.getElementById(cid); if(!el) return;
+  new Chart(el,{type:'line',data:{datasets:datasets},options:{responsive:true,animation:false,
+    interaction:{mode:'nearest',intersect:false},
+    plugins:{legend:{labels:{color:'#333',boxWidth:12,font:{size:10}}},
+             title:{display:true,text:title,color:'#444'}},
+    scales:{x:{type:'linear',title:{display:true,text:'seconds',color:'#444'},ticks:{color:'#444'},grid:{color:'#eee'}},
+            y:{title:{display:true,text:ylabel,color:'#444'},ticks:{color:'#444'},grid:{color:'#eee'}}}}});
+}
+function _buildRunCharts(runId, c){
+  if(!c || c.dataset.built) return;
+  c.dataset.built='1';
+  const data = RUN_TS[runId];
+  if(!data){ c.innerHTML='<div style="color:#888;font-size:.78rem;padding:6px">No convergence data for this run.</div>'; return; }
+  const gs = Object.keys(data).sort((a,b)=> a.length-b.length || a.localeCompare(b));
+  let h='<div style="font-size:.7rem;color:#888;margin:4px 0">k over time</div><div class="charts">';
+  gs.forEach((g,i)=>{ h+='<div class="card"><canvas id="rc_'+runId+'_'+i+'_k"></canvas></div>'; });
+  h+='</div><div style="font-size:.7rem;color:#888;margin:8px 0 4px">total crossings over time</div><div class="charts">';
+  gs.forEach((g,i)=>{ h+='<div class="card"><canvas id="rc_'+runId+'_'+i+'_x"></canvas></div>'; });
+  c.innerHTML = h+'</div>';
+  gs.forEach((g,i)=>{
+    const ms = Object.keys(data[g]);
+    const mk = vi => ms.map((m,mi)=>({label:m.toUpperCase(),
+      data:data[g][m].map(p=>({x:p[0],y:p[vi]})),
+      borderColor:_colorFor(m,mi),backgroundColor:_colorFor(m,mi)+'33',
+      borderWidth:2,pointRadius:1,tension:0.15}));
+    _mkLine('rc_'+runId+'_'+i+'_k', mk(1), g, 'k');
+    _mkLine('rc_'+runId+'_'+i+'_x', mk(2), g, 'totalX');
+  });
+}
+document.querySelectorAll('details[data-run]').forEach(d=>{
+  d.addEventListener('toggle', ()=>{ if(d.open) _buildRunCharts(d.dataset.run, d.querySelector('.run-charts')); });
+});
 (function(){
-  const START_MS      = 1780835392000;
-  const REPORT_MS     = 1780842206774;
-  const REMAIN_AT_GEN = 0 * 60;
+  const START_MS      = 1781001560000;
+  const REPORT_MS     = 1781037594276;
+  const REMAIN_AT_GEN = 3.6 * 60;
   if (!START_MS) return;
   function fmt(sec) {
     sec = Math.max(0, Math.floor(sec));
