@@ -1,4 +1,5 @@
 // approach1_lns.cpp — Large Neighbourhood Search for k-planarity minimization.
+// VERSION: 1.1.0
 //
 // Approach 1: LNS (Large Neighbourhood Search)
 //   Destroy: BFS-connected neighbourhood from a high-crossing node.
