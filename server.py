@@ -13,7 +13,7 @@ Opens http://localhost:<port> — an enhanced report page with:
   - Best Results, charts, run history embedded
 """
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 import argparse
 import json
@@ -273,7 +273,7 @@ _CTRL_PANEL = """
 <aside class="ctrl-card" id="ctrl-panel">
   <div class="ctrl-hdr">
     <span class="ctrl-hdr-title">Run Control</span>
-    <span style="font-size:.72rem;color:#888;font-weight:500;margin-left:6px">v1.1.0</span>
+    <span style="font-size:.72rem;color:#888;font-weight:500;margin-left:6px">v1.1.1</span>
     <span id="ctrl-status" class="status-pill s-idle">○ Idle</span>
   </div>
 

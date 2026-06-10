@@ -1,5 +1,5 @@
 // SAkGD - Simulated Annealing for Graph Drawing Contest 2025 (k-planarity)
-// VERSION: 1.1.0
+// VERSION: 1.1.1
 // Faithful C++ reimplementation of the approach described in:
 //   Bianchetti & Moalic, "Winning the GD Challenge for the 4th Time: Our Approach"
 //   33rd International Symposium on Graph Drawing and Network Visualization (GD 2025)
