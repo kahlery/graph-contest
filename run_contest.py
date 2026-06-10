@@ -576,8 +576,24 @@ def _parse_live_log(path: Path) -> dict:
     return s
 
 
+def _merge_worker_states(states: list) -> dict:
+    """Pick the worker state with the lowest (best_k, best_x) — i.e. the one
+    that matches what ends up written to results/best/."""
+    if not states:
+        return dict(status="waiting", initial_k=None, best_k=None, best_x=None,
+                     t_elapsed=None, temp=None, ils_round=None, ils_total=None,
+                     lns_t=None, worker=None)
+    def keyfn(s):
+        bk, bx = s.get("best_k"), s.get("best_x")
+        return (bk if bk is not None else float("inf"),
+                bx if bx is not None else float("inf"))
+    return dict(min(states, key=keyfn))
+
+
 def scan_live_status(run_dir: Path, methods: list) -> dict:
-    """Return {(gname, method): state_dict} by reading all log files in run_dir."""
+    """Return {(gname, method): state_dict} by reading all worker log files in
+    run_dir and keeping the best-of-all-workers state per (graph, method) —
+    matching the worker whose result ultimately lands in results/best/."""
     result = {}
     if not run_dir or not run_dir.exists():
         return result
@@ -593,11 +609,21 @@ def scan_live_status(run_dir: Path, methods: list) -> dict:
             spec = METHOD_BY_ID.get(method)
             if spec is None:
                 continue
-            log = gdir / live_log_name(spec)
-            if not log.exists() and len(spec["stages"]) > 1:
+            pattern = live_log_name(spec, suffix="_w*")
+            logs = sorted(gdir.glob(pattern))
+            if not logs and len(spec["stages"]) > 1:
                 # Final stage hasn't started yet; fall back to the first stage.
-                log = gdir / _stage_files(spec, 0, Path("."), "_w0")[1].name
-            result[(gname, method)] = _parse_live_log(log)
+                pattern = _stage_files(spec, 0, Path("."), "_w*")[1].name
+                logs = sorted(gdir.glob(pattern))
+            if not logs:
+                logs = [gdir / live_log_name(spec)]
+            states = []
+            for log in logs:
+                st = _parse_live_log(log)
+                m_w = re.search(r"_w(\d+)", log.name)
+                st["worker"] = int(m_w.group(1)) if m_w else 0
+                states.append(st)
+            result[(gname, method)] = _merge_worker_states(states)
     return result
 
 

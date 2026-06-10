@@ -344,6 +344,12 @@ _LIVE_SECTION = """
   <div class="card" id="live-table-wrap" style="overflow-x:auto;padding:12px">
     <em style="color:#aaa">Connecting…</em>
   </div>
+  <h2 style="margin-top:14px">Live Best per Graph
+    <small style="font-weight:400;text-transform:none;font-size:.74rem;color:#888">— best of all methods &amp; workers, right now</small>
+  </h2>
+  <div class="card" id="live-best-wrap" style="overflow-x:auto;padding:12px">
+    <em style="color:#aaa">Connecting…</em>
+  </div>
 </div>
 """
 
@@ -642,6 +648,51 @@ _CTRL_JS = r"""
     wrap.innerHTML = t;
   }
 
+  // ── live best-per-graph table ───────────────────────────────────────────────
+  function renderGraphBest(data) {
+    const wrap = document.getElementById('live-best-wrap');
+    const keys = Object.keys(data);
+    if (!keys.length) {
+      wrap.innerHTML = '<em style="color:#aaa;font-size:.85rem">No live data — start a run or check back later.</em>';
+      return;
+    }
+    const graphs = [...new Set(keys.map(k => k.split('__')[0]))]
+      .sort((a,b) => parseInt(a.match(/\d+/)||0) - parseInt(b.match(/\d+/)||0));
+
+    let t = `<table>
+  <thead><tr>
+    <th style="text-align:left;padding:8px 12px">Graph</th>
+    <th style="padding:8px 12px">Best k</th>
+    <th style="text-align:left;padding:8px 12px">Config</th>
+  </tr></thead><tbody>`;
+
+    for (const g of graphs) {
+      let best = null;
+      for (const k of keys) {
+        if (!k.startsWith(g + '__')) continue;
+        const s = data[k];
+        if (s.best_k == null) continue;
+        if (best === null
+            || s.best_k < best.s.best_k
+            || (s.best_k === best.s.best_k && (s.best_x ?? Infinity) < (best.s.best_x ?? Infinity))) {
+          best = {method: k.split('__')[1], s};
+        }
+      }
+      t += `<tr><td class="ls-cell" style="font-weight:600">${g.replace('Automatic-','Auto-')}</td>`;
+      if (best) {
+        const x = best.s.best_x != null ? `X=${best.s.best_x}` : 'X=?';
+        const w = best.s.worker != null ? `w${best.s.worker}` : '';
+        t += `<td class="ls-cell" style="font-weight:700">${best.s.best_k}</td>`;
+        t += `<td class="ls-cell"><small style="color:#888">${best.method.toUpperCase()} · ${w} · ${x}</small></td>`;
+      } else {
+        t += `<td class="ls-cell">—</td><td class="ls-cell">—</td>`;
+      }
+      t += '</tr>';
+    }
+    t += '</tbody></table>';
+    wrap.innerHTML = t;
+  }
+
   // ── poll loop ──────────────────────────────────────────────────────────────
   async function poll() {
     try {
@@ -652,6 +703,7 @@ _CTRL_JS = r"""
       setCtrlStatus(status.running, status.looping);
       renderProgress(status, live);
       renderLive(live);
+      renderGraphBest(live);
     } catch (e) { console.warn('poll error', e); }
     pollTimer = setTimeout(poll, POLL_MS);
   }
