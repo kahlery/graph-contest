@@ -612,6 +612,12 @@ public:
     // crossing count is within `selKBand` of the current kVal — instead of the
     // phase-1 total-crossing weighting. kBand is the tunable band width.
     int            kBand    = 2;     // default band; override with --kband
+    bool           lexK     = false; // phase-2 lexicographic (k, #edges@k, X)
+                                     // off by default: A/B on Automatic-6
+                                     // (dense) showed a clear regression
+    bool           kRepair  = false; // deterministic polish between waves
+                                     // off by default: A/B on Automatic-8
+                                     // showed it disrupts the cooled SA walk
     int            selKBand = -1;    // active band: <0 => phase-1 weighting
     int            lastCumK = -1;    // kVal at last rebuild (critical-mode resync)
 
@@ -1402,6 +1408,70 @@ public:
         cumStaleCnt += (int)plan.edgeCounts.size();
     }
 
+    // ----- deterministic k-repair pass --------------------------------
+    // Vertex-movement primitive (Radermacher et al., JEA 2019): for the
+    // endpoints of edges sitting at the bottleneck level k, evaluate a
+    // sampled candidate set of positions exactly (via planMove) and commit
+    // the best strictly-improving one. Catches sure wins the probabilistic
+    // SA walk misses. Returns number of committed moves.
+    int kRepairPass(int maxEdges, int candsPerNode) {
+        vector<int> top;
+        for (int e = 0; e < m; e++) if (xc[e] == kVal) top.push_back(e);
+        shuffle(top.begin(), top.end(), rng);
+        if ((int)top.size() > maxEdges) top.resize(maxEdges);
+
+        MovePlan plan;
+        int committed = 0;
+        double scale = sqrt((double)max<ll>(1, W) * (double)max<ll>(1, H));
+        normal_distribution<double> nd(0.0, max(1.0, scale * 0.05));
+
+        for (int e : top) {
+            if (xc[e] != kVal) continue;        // may have improved already
+            for (int v : {edges[e].u, edges[e].v}) {
+                Pt   curPos  = pos[v];
+                Pt   bestPos = curPos;
+                int  bestLK  = INT_MAX;
+                int  bestD   = INT_MAX;
+                int  oldLK   = -1;
+                for (int c = 0; c < candsPerNode; c++) {
+                    Pt p;
+                    if (c % 2 == 0) {           // local Gaussian candidate
+                        p.x = curPos.x + (ll)llround(nd(rng));
+                        p.y = curPos.y + (ll)llround(nd(rng));
+                    } else {                    // global uniform candidate
+                        p.x = uniform_int_distribution<ll>(ox, ox + W)(rng);
+                        p.y = uniform_int_distribution<ll>(oy, oy + H)(rng);
+                    }
+                    if (p.x < ox) p.x = ox; if (p.x > ox + W) p.x = ox + W;
+                    if (p.y < oy) p.y = oy; if (p.y > oy + H) p.y = oy + H;
+                    if (p == curPos) continue;
+                    {
+                        auto it = occupied.find(p);
+                        if (it != occupied.end() && it->second != v) continue;
+                    }
+                    if (wouldCauseVertexEdgeOverlapFast(v, p)) continue;
+                    planMove(v, p, plan);
+                    oldLK = plan.oldLocalK;
+                    if (plan.newLocalK < bestLK ||
+                        (plan.newLocalK == bestLK && plan.dCross < bestD)) {
+                        bestLK  = plan.newLocalK;
+                        bestD   = plan.dCross;
+                        bestPos = p;
+                    }
+                }
+                if (oldLK < 0) continue;
+                if (bestLK < oldLK || (bestLK == oldLK && bestD < 0)) {
+                    planMove(v, bestPos, plan);
+                    commitMove(plan);
+                    committed++;
+                    if (kVal < bestK || (kVal == bestK && totalX < bestX))
+                        saveBest();
+                }
+            }
+        }
+        return committed;
+    }
+
     // ----- SA shell (Algorithm 1) ------------------------------------
     // Phase: 1 = minimise total crossings, 2 = minimise k-value (dual fitness).
     void runSA(int phase,
@@ -1426,6 +1496,7 @@ public:
 
         long long moves = 0, accepts = 0;
         double startingTemp = initT;
+        double repairSpent  = 0.0;
 
         cerr << "[phase " << phase << "] start  initT=" << initT
              << " decT=" << decT << " decTW=" << decTW << " tLim=" << tLim
@@ -1478,8 +1549,26 @@ public:
                 } else {
                     int  dLocalK = plan.newLocalK - plan.oldLocalK;
                     if (dLocalK != 0) dE = (double)dLocalK;
-                    else dE = (double)plan.dCross /
-                              max(1.0, (double)max<ll>(1, totalX));
+                    else {
+                        // Lexicographic middle objective: before k itself can
+                        // drop, every edge sitting at the bottleneck level k
+                        // must lose a crossing. Pricing one of the cntPerK[k]
+                        // top-level edges at 1/cntPerK[k] makes clearing the
+                        // whole level worth ~1, i.e. one unit of k.
+                        int dTop = 0;
+                        if (lexK) {
+                            for (auto& ec : plan.edgeCounts) {
+                                int oldC = std::get<1>(ec);
+                                int newC = std::get<2>(ec);
+                                dTop += (int)(newC >= kVal) - (int)(oldC >= kVal);
+                            }
+                        }
+                        if (dTop != 0)
+                            dE = (double)dTop / max(1, cntPerK[kVal]);
+                        else
+                            dE = (double)plan.dCross /
+                                 max(1.0, (double)max<ll>(1, totalX));
+                    }
                 }
 
                 bool acc = false;
@@ -1512,6 +1601,14 @@ public:
                 }
             }
             startingTemp *= decTW;
+            // Deterministic polish between waves, capped at ~10% of the
+            // phase's elapsed time so it never starves the SA walk.
+            if (phase == 2 && kRepair &&
+                repairSpent < 0.10 * max(1.0, elapsed())) {
+                double rt0 = elapsed();
+                kRepairPass(/*maxEdges*/16, /*candsPerNode*/64);
+                repairSpent += elapsed() - rt0;
+            }
             // Each new wave starts from the best known solution (paper, line
             // 19). A full restore recomputes all crossings — 32s of a 120s
             // Automatic-8 phase 1 (95 waves) — so skip it when the current
@@ -1545,6 +1642,10 @@ static void printUsage(const char* prog) {
         "  -p1 time budget of phase 1 in minutes    (default: 10)\n"
         "  -s  RNG seed                             (default: time-based)\n"
         "  --kband N  phase-2 k-critical selection band, -1 to disable (default: 2)\n"
+        "  --lexk 0|1 phase-2 lexicographic fitness (k, #edges at k, totalX)\n"
+        "             (default: 0 — hurts dense graphs)\n"
+        "  --krepair 0|1 deterministic vertex-move polish of bottleneck edges\n"
+        "             between phase-2 waves (default: 0)\n"
         "  --init MODE  initial layout: auto|input|bfs (default: auto —\n"
         "               sample crossing density, keep input unless BFS snake is sparser)\n"
         "  --status-file PATH    write live status JSON to PATH\n"
@@ -1563,6 +1664,8 @@ int main(int argc, char** argv) {
     string traceFile;
     double statusInterval = 1.0;
     int    kbandArg  = 2;     // phase-2 k-critical selection band
+    int    lexkArg   = 0;     // phase-2 lexicographic fitness, 1 to enable
+    int    krepairArg = 0;    // inter-wave deterministic k-repair, 1 to enable
     string initMode  = "auto";
 
     for (int i = 1; i < argc; i++) {
@@ -1577,6 +1680,8 @@ int main(int argc, char** argv) {
         else if (a == "-p1")                 phase1Min  = atof(need("-p1"));
         else if (a == "-s")                  seed       = atoll(need("-s"));
         else if (a == "--kband")             kbandArg   = atoi(need("--kband"));
+        else if (a == "--lexk")              lexkArg    = atoi(need("--lexk"));
+        else if (a == "--krepair")           krepairArg = atoi(need("--krepair"));
         else if (a == "--init")              initMode   = need("--init");
         else if (a == "--status-file")       statusFile = need("--status-file");
         else if (a == "--status-id")         statusId   = need("--status-id");
@@ -1604,6 +1709,8 @@ int main(int argc, char** argv) {
     solver.statusInterval = max(0.05, statusInterval);
     solver.traceFile      = traceFile;
     solver.kBand          = kbandArg;
+    solver.lexK           = (lexkArg != 0);
+    solver.kRepair        = (krepairArg != 0);
     solver.initMode       = initMode;
     solver.runStartedAt   = steady_clock::now();
     if (!traceFile.empty()) ofstream(traceFile, std::ios::trunc);  // start clean

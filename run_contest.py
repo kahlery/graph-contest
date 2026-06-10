@@ -33,6 +33,7 @@ ROOT      = Path(__file__).resolve().parent
 DATA_DIR  = ROOT / "data" / "live-2025-contest" / "live-contest"
 SAKGD     = ROOT / "sakgd"
 APPROACH1 = ROOT / "approach1"
+STRESS_INIT = ROOT / "tools" / "stress_init.py"
 
 # Per-graph time groups (minutes per combo).
 GRAPH_GROUPS = {
@@ -43,6 +44,7 @@ GRAPH_GROUPS = {
 
 METHOD_COLORS = {
     "sa":                     "#4361ee",
+    "sa-stress":              "#06d6a0",
     "staged":                 "#7209b7",
     "ils":                    "#f72585",
     "staged-adaptive":        "#f4a261",
@@ -321,6 +323,12 @@ def _run(cmd, log_path):
 #           original "baseline" selection). Only emitted when != 2.
 # ---------------------------------------------------------------------------
 def _stages_sa():   return [{"bin": "sakgd", "frac": "full"}]
+def _stages_sa_stress():
+    return [{"bin": "stress", "tag": "init", "frac": "init"},
+            # init left at the solver's "auto" default: it keeps the stress
+            # layout when it is good and falls back to BFS-snake if the init
+            # stage failed and passed through a poor layout
+            {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True}]
 def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
 def _stages_staged(lns_mode):
     return [{"bin": "approach1", "mode": lns_mode, "tag": "lns", "frac": "lns"},
@@ -328,6 +336,7 @@ def _stages_staged(lns_mode):
 
 METHODS = [
     {"id": "sa",                   "label": "SA",                 "kband": 2,  "stages": _stages_sa()},
+    {"id": "sa-stress",            "label": "SA (stress init)",   "kband": 2,  "stages": _stages_sa_stress()},
     {"id": "ils",                  "label": "ILS",                "kband": 2,  "stages": _stages_ils()},
     {"id": "staged",               "label": "Staged",             "kband": 2,  "stages": _stages_staged("lns")},
     {"id": "staged-adaptive",      "label": "Staged-Adaptive",    "kband": 2,  "stages": _stages_staged("lns-adaptive")},
@@ -340,13 +349,20 @@ METHODS = [
 ]
 METHOD_BY_ID = {m["id"]: m for m in METHODS}
 
+# Share of the budget spent generating the stress/force initial layout
+# (the winning SAkGD entry spent ~1 minute of its hour on this).
+INIT_FRAC = 0.08
+
 
 def _resolve_fracs(spec, lns_frac):
     """Map each stage's symbolic frac to an absolute fraction of the budget."""
     fr = []
     for st in spec["stages"]:
         kind = st.get("frac", "full")
-        fr.append(1.0 if kind == "full" else lns_frac if kind == "lns" else None)
+        fr.append(1.0 if kind == "full"
+                  else lns_frac if kind == "lns"
+                  else INIT_FRAC if kind == "init"
+                  else None)
     used = sum(x for x in fr if x is not None)
     return [(1.0 - used) if x is None else x for x in fr]
 
@@ -388,21 +404,28 @@ def run_method(spec, gpath, total_min, p1_frac, seed, out_dir, suffix,
         stage_min = total_min * fracs[idx]
         inp = (prev_out if (st.get("warm") and prev_out and Path(prev_out).exists())
                else gpath)
-        binpath  = SAKGD if st["bin"] == "sakgd" else APPROACH1
         out, log = _stage_files(spec, idx, out_dir, suffix)
         trace    = log.with_suffix(".trace")
-        cmd = [str(binpath), "-i", str(inp), "-o", str(out),
-               "-t", mins(stage_min), "-p1", mins(stage_min * p1_frac),
-               "-s", str(seed), "--trace-file", str(trace)]
-        mode = st.get("mode")
-        if mode:
-            cmd += ["--mode", mode]
-        if mode in ("lns", "lns-adaptive"):
-            cmd += ["--nh-size", str(nh_size), "--nh-cands", str(nh_cands)]
-        if mode == "ils" and ils_perturb > 0:
-            cmd += ["--ils-perturb", str(ils_perturb)]
-        if kband != 2:
-            cmd += ["--kband", str(kband)]
+        if st["bin"] == "stress":
+            cmd = [sys.executable, str(STRESS_INIT), "-i", str(inp),
+                   "-o", str(out), "-s", str(seed),
+                   "-t", str(round(stage_min * 60.0, 1))]
+        else:
+            binpath  = SAKGD if st["bin"] == "sakgd" else APPROACH1
+            cmd = [str(binpath), "-i", str(inp), "-o", str(out),
+                   "-t", mins(stage_min), "-p1", mins(stage_min * p1_frac),
+                   "-s", str(seed), "--trace-file", str(trace)]
+            mode = st.get("mode")
+            if mode:
+                cmd += ["--mode", mode]
+            if mode in ("lns", "lns-adaptive"):
+                cmd += ["--nh-size", str(nh_size), "--nh-cands", str(nh_cands)]
+            if mode == "ils" and ils_perturb > 0:
+                cmd += ["--ils-perturb", str(ils_perturb)]
+            if kband != 2:
+                cmd += ["--kband", str(kband)]
+            if st.get("initmode"):
+                cmd += ["--init", st["initmode"]]
         rc, sec = _run(cmd, log)
         if rc_final == 0:
             rc_final = rc

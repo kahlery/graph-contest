@@ -38,7 +38,7 @@ _loop_stop   = threading.Event()
 _loop_thread = None
 _config = {
     "run_name":       "",
-    "methods":        "sa,ils",
+    "methods":        "sa,sa-stress,ils",
     "graphs":         "1-9",
     "minutes_small":  1.0,
     "minutes_medium": 1.5,

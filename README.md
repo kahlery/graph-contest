@@ -6,6 +6,9 @@ times any single edge is crossed by other edges.
 Based on: Bianchetti & Moalic, *"Winning the GD Challenge for the 4th Time"*,
 GD 2025 ([LIPIcs.GD.2025.43](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.GD.2025.43)).
 
+Ayrıntılı yaklaşım/metot dokümantasyonu ve makalenin üzerine eklediklerimiz:
+[docs/YAKLASIMLAR.md](docs/YAKLASIMLAR.md).
+
 ---
 
 ## Problem
@@ -22,6 +25,7 @@ Minimise **k = max crossings on any single edge**, breaking ties by total crossi
 |------|-------------|
 | `src/main.cpp` | Original solver (`./sakgd`) — Simulated Annealing only. JSON parser and spatial grid included; no external dependencies. |
 | `src/approach1_lns.cpp` | Approach 1 solver (`./approach1`) — adds Large Neighbourhood Search on top of the same SA infrastructure. Supports `--mode sa` (identical to `./sakgd`) and `--mode lns`. |
+| `tools/stress_init.py` | Stress/force-directed initial layout generator (graphviz sfdp/neato + grid snap). Powers the `sa-stress` method — strongest on sparse graphs. |
 | `dashboard.py` | Runs multiple solver workers in parallel and serves a live browser dashboard. |
 | `run_contest.py` | Batch runner: solves the 9 contest graphs with each method (`sa`, `staged`, `ils`, `lns`), tracks every run in `results/runs/`, maintains best-ever layouts in `results/best/`, and generates `results/report.html`. |
 | `dashboard/index.html` | Vanilla-JS frontend for the live dashboard. |
