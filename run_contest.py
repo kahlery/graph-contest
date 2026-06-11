@@ -49,6 +49,7 @@ METHOD_COLORS = {
     "sa":                     "#4361ee",
     "sa-stress":              "#06d6a0",
     "sa-stress-pro":          "#0496ff",
+    "sa-stress-sq2":          "#ffb703",
     "staged":                 "#7209b7",
     "ils":                    "#f72585",
     "staged-adaptive":        "#f4a261",
@@ -369,6 +370,14 @@ def _stages_sa_stress_pro():
             # exploration — prefer plain sa-stress.
             {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
              "extra": ["--polish", "1", "--reheat", "15"]}]
+def _stages_sa_stress_sq2():
+    return [{"bin": "stress", "tag": "init", "frac": "init"},
+            # sa-stress with the squared-crossings k-neutral tie-break
+            # (--fit sq2). 2026-06-11 4-seed A/B: mean equal to sa-stress,
+            # variance higher with lower lows (A7 27, A3 37) — useful as
+            # portfolio diversity when taking best-of-workers.
+            {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
+             "extra": ["--fit", "sq2"]}]
 def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
 def _stages_staged(lns_mode):
     return [{"bin": "approach1", "mode": lns_mode, "tag": "lns", "frac": "lns"},
@@ -377,6 +386,7 @@ def _stages_staged(lns_mode):
 METHODS = [
     {"id": "sa",                   "label": "SA",                 "kband": 2,  "stages": _stages_sa()},
     {"id": "sa-stress",            "label": "SA (stress init)",   "kband": 2,  "stages": _stages_sa_stress()},
+    {"id": "sa-stress-sq2",        "label": "SA (stress+sq2)",    "kband": 2,  "stages": _stages_sa_stress_sq2()},
     {"id": "sa-stress-pro",        "label": "SA (stress+polish)", "kband": 2,  "stages": _stages_sa_stress_pro()},
     {"id": "ils",                  "label": "ILS",                "kband": 2,  "stages": _stages_ils()},
     {"id": "staged",               "label": "Staged",             "kband": 2,  "stages": _stages_staged("lns")},

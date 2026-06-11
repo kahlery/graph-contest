@@ -615,6 +615,11 @@ public:
     bool           lexK     = false; // phase-2 lexicographic (k, #edges@k, X)
                                      // off by default: A/B on Automatic-6
                                      // (dense) showed a clear regression
+    bool           fitSq2   = false; // phase-2: xc^2 delta as the k-neutral
+                                     // tie-break tier (dLocalK stays primary)
+    bool           fitSq    = false; // phase-2 fitness = sum of xc^2 deltas
+                                     // (soft max proxy: pressures ALL high-
+                                     // crossing edges, not just the k band)
     int            reheatWaves = 0; // phase-2: waves without a bestK drop
                                     // before resetting temp to initT (0 = off)
     bool           kRepair  = false; // deterministic polish between waves
@@ -1550,6 +1555,17 @@ public:
                 double dE;
                 if (phase == 1) {
                     dE = (double)plan.dCross;
+                } else if (fitSq) {
+                    // Squared-crossings fitness: dE = sum(newC^2 - oldC^2),
+                    // normalised so that +-1 crossing on a bottleneck-level
+                    // edge costs ~1 (comparable to the dLocalK unit below).
+                    double dsq = 0.0;
+                    for (auto& ec : plan.edgeCounts) {
+                        double oldC = (double)std::get<1>(ec);
+                        double newC = (double)std::get<2>(ec);
+                        dsq += newC * newC - oldC * oldC;
+                    }
+                    dE = dsq / max(1.0, 2.0 * (double)kVal);
                 } else {
                     int  dLocalK = plan.newLocalK - plan.oldLocalK;
                     if (dLocalK != 0) dE = (double)dLocalK;
@@ -1569,7 +1585,19 @@ public:
                         }
                         if (dTop != 0)
                             dE = (double)dTop / max(1, cntPerK[kVal]);
-                        else
+                        else if (fitSq2) {
+                            // k-neutral tie-break by squared-crossings delta:
+                            // among moves that don't touch the bottleneck,
+                            // prefer ones that unload high-crossing edges.
+                            double dsq = 0.0;
+                            for (auto& ec : plan.edgeCounts) {
+                                double oldC = (double)std::get<1>(ec);
+                                double newC = (double)std::get<2>(ec);
+                                dsq += newC * newC - oldC * oldC;
+                            }
+                            dE = dsq / max(1.0, 2.0 * (double)kVal *
+                                                (double)max<ll>(1, totalX));
+                        } else
                             dE = (double)plan.dCross /
                                  max(1.0, (double)max<ll>(1, totalX));
                     }
@@ -1689,6 +1717,7 @@ int main(int argc, char** argv) {
     double p2DecT = 0.9999;   // phase-2 per-move cooling factor
     int    reheatArg = 0;     // phase-2 stagnation reheat, waves (0 = off)
     int    polishArg = 0;     // final deterministic k-repair polish (0 = off)
+    string fitArg    = "k";   // phase-2 fitness: k (paper dual) | sq (xc^2)
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -1710,6 +1739,7 @@ int main(int argc, char** argv) {
         else if (a == "--p2-dect")           p2DecT     = atof(need("--p2-dect"));
         else if (a == "--reheat")            reheatArg  = atoi(need("--reheat"));
         else if (a == "--polish")            polishArg  = atoi(need("--polish"));
+        else if (a == "--fit")               fitArg     = need("--fit");
         else if (a == "--status-file")       statusFile = need("--status-file");
         else if (a == "--status-id")         statusId   = need("--status-id");
         else if (a == "--status-interval")   statusInterval = atof(need("--status-interval"));
@@ -1739,6 +1769,8 @@ int main(int argc, char** argv) {
     solver.lexK           = (lexkArg != 0);
     solver.kRepair        = (krepairArg != 0);
     solver.reheatWaves    = reheatArg;
+    solver.fitSq          = (fitArg == "sq");
+    solver.fitSq2         = (fitArg == "sq2");
     solver.initMode       = initMode;
     solver.runStartedAt   = steady_clock::now();
     if (!traceFile.empty()) ofstream(traceFile, std::ios::trunc);  // start clean
