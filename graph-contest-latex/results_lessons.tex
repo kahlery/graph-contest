@@ -1,0 +1,91 @@
+\section{Results \& Lessons}
+
+\begin{frame}{Final Results: All Nine Instances}
+  Best validated $k$ per instance (accumulated over our runs), against last year's
+  live leaderboard and the GD'25 winning team:
+  \begin{center}
+    \footnotesize
+    \begin{tabular}{lrrll}
+      \toprule
+      \textbf{Graph} & \textbf{Ours} & \textbf{Method} & \textbf{Best other team} & \textbf{GD'25 winner} \\
+      \midrule
+      Automatic-1 & 9   & \texttt{sa}        &      &      \\
+      Automatic-2 & 3   & \texttt{sa}        &      &      \\
+      Automatic-3 & 35  & \texttt{sa}        &      &      \\
+      Automatic-4 & 6   & \texttt{ils}       &      &      \\
+      Automatic-5 & 75  & \texttt{staged}    &      &      \\
+      Automatic-6 & 624 & \texttt{sa}        & 621  & 568 (49\,min) \\
+      Automatic-7 & \textbf{28}  & \texttt{sa-stress} & 31   & 31   \\
+      Automatic-8 & \textbf{6}   & \texttt{sa-stress} & 12   & 15   \\
+      Automatic-9 & \textbf{10}  & \texttt{sa-stress} & 13   & 12   \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  \smallskip
+  \begin{itemize}
+    \item \textbf{Ahead of the winning team on A7, A8, A9} (A8: $15 \to 6$);
+          A6 is the one open front.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Automatic-8: What Each Improvement Bought}
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[width=0.86\linewidth,height=6.1cm,
+        ybar, bar width=16pt,
+        symbolic x coords={input start,grid repair,snake init,+smoothing,stress init},
+        xtick=data, ymode=log, log origin=infty,
+        ymin=1, ymax=30000,
+        ylabel={final $k$ (log scale)},
+        point meta=rawy,
+        nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+        every node near coord/.append style={font=\scriptsize},
+        tick label style={font=\scriptsize},label style={font=\scriptsize}]
+      \addplot[fill=accent!70] coordinates
+        {(input start,10011) (grid repair,9958) (snake init,247) (+smoothing,52) (stress init,6)};
+    \end{axis}
+  \end{tikzpicture}
+
+  \smallskip
+  Setup: $\sim$12\,min $\to$ $\sim$8\,s. Validity: \emph{none} $\to$ exact-verified on all graphs.
+\end{frame}
+
+\begin{frame}{Lessons Learned}
+  \begin{enumerate}
+    \item \textbf{The starting point beats the search.} Every order-of-magnitude win came
+          from a better initial layout; no modification of the annealing walk survived a
+          paired A/B.
+    \item \textbf{Measure before optimising.} The two biggest engineering wins
+          (restart cost, repair) were found by profiling, not intuition.
+    \item \textbf{Single-seed comparisons are noise.} Wall-clock budgets make even
+          same-seed reruns diverge under different machine load; we moved to paired,
+          equal-load, multi-seed A/Bs for every decision.
+    \item \textbf{Negative results are results.} Five rejected ideas, each with a
+          documented experiment, protect the project from re-trying them later.
+    \item \textbf{Infrastructure compounds.} Best-ever tracking, the live dashboard and
+          one-command A/Bs made the decisive experiments cheap.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{What Remains \& Takeaway}
+  \textbf{Open front: Automatic-6} (dense, 200 nodes / 3\,000 edges).
+  \begin{itemize}
+    \item Resists every init (est.\ 473 crossings/edge even after a stress layout ---
+          stress init actually \emph{hurts} here: 765 vs.\ plain SA's 624);
+          $k$ scales with budget: $632 \to 624$ by going to $15$\,min $\times$ 8 workers.
+    \item Plan: 30--60\,min runs to close the gap to 621 (other teams) / 568 (winner @49\,min).
+  \end{itemize}
+  \medskip
+  \textbf{If you remember one thing:}
+  \begin{center}
+    \emph{We took the winning team's solver design, made it correct on the hardest input,
+    3$\times$ faster in the move loop on that instance, and gave it a better starting
+    point ---\\
+    and that was enough to beat the winner's published results on a third of the instances.}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item Code, pipeline, dashboard and all experiment logs:
+          \texttt{github.com/kahlery/graph-contest}
+  \end{itemize}
+\end{frame}

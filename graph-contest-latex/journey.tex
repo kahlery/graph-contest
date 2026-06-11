@@ -1,0 +1,96 @@
+\section{The Problem \& Where We Started}
+
+\begin{frame}{The Contest Problem: $k$-Planarity}
+  \textbf{Task (GD Contest, live challenge):} place the vertices of a given graph on integer
+  grid points inside a \emph{fixed} canvas so that the \textbf{maximum number of crossings
+  on any single edge} is minimised.
+  \[
+    \text{minimise } k=\max_e \mathrm{cr}(e), \qquad \text{tie-break: total crossings } \chi
+  \]
+  \begin{itemize}
+    \item Straight-line edges only; \textbf{canvas is a hard constraint} (cannot be enlarged).
+    \item No vertex may lie on a foreign edge --- otherwise the drawing is \emph{invalid}.
+    \item Nine instances from $n=50$ to $n=10\,466$; budget: one hour per instance.
+  \end{itemize}
+  \begin{center}
+    \scriptsize
+    \setlength{\tabcolsep}{4pt}
+    \begin{tabular}{lrrr@{\qquad}lrrr}
+      \toprule
+      & $n$ & $m$ & canvas & & $n$ & $m$ & canvas \\
+      \midrule
+      A1 & 50  & 202 & $200{\times}190$   & A6 & 200    & 3\,000  & $300{\times}297$ \\
+      A2 & 144 & 314 & $114{\times}114$   & A7 & 500    & 1\,740  & $115{\times}116$ \\
+      A3 & 100 & 420 & $9504{\times}9868$ & A8 & 10\,466 & 20\,288 & $342{\times}294$ \\
+      A4 & 196 & 571 & $134{\times}134$   & A9 & 2\,519 & 4\,938  & $148{\times}148$ \\
+      A5 & 500 & 2\,556 & $249\text{k}{\times}250\text{k}$ & & & & \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+\end{frame}
+
+\begin{frame}{Where We Started (May 5 -- June 3)}
+  \textbf{Starting point:} a faithful re-implementation of the winning GD'25 entry
+  (Bianchetti \& Moalic, \emph{LIPIcs.GD.2025.43}).
+  \begin{itemize}
+    \item Two-phase Simulated Annealing: phase 1 minimises $\chi$, phase 2 minimises $k$
+          with a dual fitness ($\Delta K_{\text{local}}$ first, $\Delta\chi$ as tie-break).
+    \item C++17, zero dependencies; incremental crossing bookkeeping per move.
+    \item Added our own method family on top: greedy \textbf{LNS}, \textbf{staged}
+          (LNS $\to$ SA warm-start), \textbf{ILS} (SA rounds + random kicks).
+  \end{itemize}
+  \medskip
+  \textbf{The state of the world in early June:}
+  \begin{itemize}
+    \item Automatic-8 produced \alert{invalid output} (vertex-on-edge overlaps survived repair)
+          --- no file written at all.
+    \item $\sim$12 minutes of setup before the solver even started on A8, final $k\approx 10\,000$.
+    \item Per-move validity checks were $O(n\cdot\deg)$ --- the move loop \emph{is} the budget.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Our Experiment Platform (built early, paid off daily)}
+  Every claim in this talk is reproducible because every run goes through one pipeline:
+  \begin{itemize}
+    \item \texttt{run\_contest.py} --- method registry, per-run directories, best-ever
+          tracking per graph$\times$method, accumulated history.
+    \item \textbf{Multi-worker portfolio}: same budget split across 4--8 seeds in parallel,
+          report the best --- single-seed variance is huge (more on that later).
+    \item Live web control panel (\texttt{server.py}): configure, start, stop runs;
+          status table refreshes every 5\,s; Chart.js convergence plots.
+    \item 219-graph external benchmark (\texttt{gda-testing}) for generalisation checks.
+  \end{itemize}
+  \medskip
+  \textbf{Why it matters:} the decisive experiments of this project were cheap
+  \emph{because} starting a controlled A/B took one command.
+\end{frame}
+
+\begin{frame}{The Journey at a Glance}
+  \centering
+  \resizebox{0.97\linewidth}{!}{%
+  \begin{tikzpicture}[
+      ev/.style={font=\scriptsize,align=center},
+      good/.style={ev,text=teal},
+      bad/.style={ev,text=warm}]
+    \draw[muted,line width=1.2pt,-{Stealth}] (0,0) -- (15.0,0);
+    \foreach \x/\d in {0.4/{May 5},2.6/{Jun 3},4.6/{Jun 5},6.4/{Jun 6},7.9/{Jun 7},9.6/{Jun 9},11.8/{Jun 10},13.8/{Jun 11}}
+      {\draw[muted] (\x,-0.09) -- (\x,0.09); \node[ev,anchor=north] at (\x,-0.18){\d};}
+    \node[good,anchor=south] at (0.4,0.25){first commit\\paper SA};
+    \node[good,anchor=south] at (2.6,0.25){pipeline\\+ LNS/ILS};
+    \node[bad,anchor=south]  at (4.6,0.25){A8 invalid!\\grid repair};
+    \node[good,anchor=south] at (6.4,0.25){fast overlap\\check};
+    \node[good,anchor=south] at (7.9,0.25){$k$-critical\\selection};
+    \node[good,anchor=south] at (9.6,0.25){BFS snake\\+ smoothing};
+    \node[good,anchor=south] at (11.8,0.25){\textbf{stress init}\\A8: $31\to 7$};
+    \node[bad,anchor=south]  at (13.8,0.25){ablations:\\5 ideas rejected};
+  \end{tikzpicture}}
+  \medskip
+
+  \begin{itemize}
+    \item Three kinds of progress: \textcolor{teal}{\textbf{correctness}} (validity, repair),
+          \textcolor{teal}{\textbf{throughput}} (grids, restart cost),
+          \textcolor{teal}{\textbf{starting point}} (constructive + force-directed inits).
+    \item And one kind of insight: \textcolor{warm}{\textbf{documented negative results}} ---
+          knowing what \emph{doesn't} work and why.
+  \end{itemize}
+\end{frame}

@@ -1,0 +1,114 @@
+\section{What We Tried \& What We Found}
+
+\begin{frame}{Correctness \& Throughput Engineering}
+  \textbf{Crisis (Jun 5): Automatic-8 wrote no output at all.} The input drawing has
+  vertex-on-edge overlaps; the old $O(n\cdot m)$ repair never converged on $10\,466$ nodes
+  in a $342{\times}294$ canvas $\Rightarrow$ invalid layout $\Rightarrow$ exit without a file.
+  \medskip
+  \begin{itemize}
+    \item \textbf{Grid-accelerated repair}: vertex grid shares the edge-grid geometry;
+          multi-pass relocation with expanding radius; scatter fallback. A8 now repairs
+          in-place in seconds.
+    \item \textbf{Per-move fast overlap check} (vertex grid kept in sync on every commit):
+          exact-equivalent to the slow check, $\sim$10--25\% more moves/s on sparse graphs.
+    \item \textbf{\texttt{restoreBest} skip}: wave-end restarts recomputed \emph{all} crossings
+          --- measured \textbf{27\% of A8's phase-1 budget}. Skipped when the current state
+          already matches the best: $342$k $\to$ $1.01$M moves ($3\times$).
+    \item \textbf{LNS budget discipline}: capped neighbourhood size + intra-iteration time
+          check --- one iteration can no longer overshoot the whole budget.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Phase 2: $k$-Critical Vertex Selection}
+  \textbf{Observation:} phase 2 minimises the \emph{maximum}, but vertices were selected by
+  \emph{total} incident crossings --- poorly targeted at the bottleneck.
+  \medskip
+
+  \textbf{Change:} bias selection towards endpoints of edges within band $\beta=2$ of the
+  current $k$, with quadratic emphasis.
+  \begin{itemize}
+    \item \textbf{A/B (Automatic-7, 2\,min, same seeds):} $k=55/61$ with vs.\ $77/75$ without.
+    \item \textbf{Hidden scaling bug found later:} a fixed base mass of $0.1$ per vertex
+          swamped the critical mass on large $n$ --- on A8, $\sim$97\% of picks were
+          effectively uniform. Fix: scale base mass to the critical mass
+          ($\sim$75\% critical picks at any $n$).
+  \end{itemize}
+  \medskip
+  \textbf{Methodology lesson (the ``old results were better'' scare).} Same code, 60\,s,
+  seeds 42--45 on Automatic-4: $k\in\{9,15,22,17\}$. What looked like a regression was
+  luck accumulated over long runs. Since then: \emph{paired runs, identical seeds, equal
+  budgets, same machine load} --- or the comparison is noise.
+\end{frame}
+
+\begin{frame}{Initial Layouts I: Don't Trust the Input (Jun 9)}
+  \textbf{Root cause of the A8 disaster:} the \emph{given} drawing has $\sim$45M crossings
+  (avg.\ 4\,561 per edge) --- local moves can never untangle it, and building crossing
+  tables alone takes minutes. The graph itself is nearly planar ($m<2n$, max.\ degree 5).
+  \medskip
+
+  \textbf{Constructive inits} (\texttt{--init auto}): BFS-snake grid layout, then 50 rounds
+  of barycenter smoothing with rescale-to-canvas; sample crossing density of
+  \{input, snake, smoothed\} and keep the sparsest.
+  \begin{center}
+    \begin{tabular}{lrrr}
+      \toprule
+      Automatic-8 & \textbf{input} & \textbf{BFS snake} & \textbf{+ smoothing} \\
+      \midrule
+      avg.\ crossings / edge & 4\,561 & 105 & \textbf{14} \\
+      setup time             & $\sim$12\,min & \multicolumn{2}{c}{$\sim$8\,s} \\
+      $k$ after a short run  & 9\,958 (15\,min!) & 247 (3\,min) & \textbf{52} (3\,min) \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+\end{frame}
+
+\begin{frame}{Initial Layouts II: The Stress-Init Breakthrough (Jun 10--11)}
+  \textbf{Reading the winners again:} our SA parameters already matched the winning paper
+  \emph{exactly} --- the real difference was their initialisation
+  (OGDF stress majorisation + FMMM).
+  \medskip
+
+  \textbf{Our replication} (\texttt{tools/stress\_init.py}): graphviz \texttt{sfdp}/\texttt{neato}
+  $\to$ scale to canvas $\to$ integer grid snap $\to$ spiral collision resolution;
+  method \texttt{sa-stress} = stress init + the same SA.
+  \begin{center}
+    \begin{tabular}{lrrr}
+      \toprule
+      full budget, 8 workers & A7 & A8 & A9 \\
+      \midrule
+      best before stress init        & 39 & 31 & 21 \\
+      \textbf{with stress init}      & \textbf{28} & \textbf{7} & \textbf{10} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item \texttt{sfdp} beat \texttt{neato} on every instance; on $n>3000$ only \texttt{sfdp} runs.
+    \item Accumulated runs since then pushed A8 further: $7 \to 6$.
+    \item One exception: dense A6 resists \emph{any} init --- more on the final slide.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{What Didn't Work --- and Why That's Worth a Slide}
+  All tested in \emph{paired} A/Bs (same seeds, same init, same machine load, 2--15\,min):
+  \medskip
+  \begin{center}
+    \begin{tabular}{lll}
+      \toprule
+      \textbf{Idea} & \textbf{Result} & \textbf{Verdict} \\
+      \midrule
+      Lexicographic phase-2 fitness     & dense A6: $632\to 735$            & rejected \\
+      Inter-wave deterministic $k$-repair & A8: $7\to 11$ (2\,min)          & rejected \\
+      Phase budget split / temperatures  & within seed noise                 & defaults kept \\
+      Stagnation reheat (15-min runs)    & A9: $10\to 11$; 105 reheats hurt  & rejected \\
+      End-of-budget polish               & harmless, $\sim$no gain           & optional flag \\
+      Squared crossings as objective     & A6: $802\to 1077$                 & rejected \\
+      Squared tie-break (\texttt{sq2})   & only compensates a bad init       & portfolio only \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  \medskip
+  \textbf{The pattern:} the SA core (dual fitness + temperature waves) is genuinely
+  well-designed; every ``clever'' modification of the walk made it worse.
+  The leverage was always \emph{correctness, throughput, and the starting point}.
+\end{frame}
