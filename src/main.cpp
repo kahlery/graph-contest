@@ -615,6 +615,8 @@ public:
     bool           lexK     = false; // phase-2 lexicographic (k, #edges@k, X)
                                      // off by default: A/B on Automatic-6
                                      // (dense) showed a clear regression
+    int            reheatWaves = 0; // phase-2: waves without a bestK drop
+                                    // before resetting temp to initT (0 = off)
     bool           kRepair  = false; // deterministic polish between waves
                                      // off by default: A/B on Automatic-8
                                      // showed it disrupts the cooled SA walk
@@ -1497,6 +1499,8 @@ public:
         long long moves = 0, accepts = 0;
         double startingTemp = initT;
         double repairSpent  = 0.0;
+        int    lastBestK    = bestK;   // reheat bookkeeping
+        int    staleWaves   = 0;
 
         cerr << "[phase " << phase << "] start  initT=" << initT
              << " decT=" << decT << " decTW=" << decTW << " tLim=" << tLim
@@ -1601,6 +1605,19 @@ public:
                 }
             }
             startingTemp *= decTW;
+            // Stagnation reheat (phase 2): when bestK hasn't dropped for
+            // reheatWaves consecutive waves, reset the wave temperature to
+            // initT so the walk can escape the frozen local optimum instead
+            // of spending the rest of the budget at tLim.
+            if (phase == 2 && reheatWaves > 0) {
+                if (bestK < lastBestK) { lastBestK = bestK; staleWaves = 0; }
+                else if (++staleWaves >= reheatWaves) {
+                    startingTemp = initT;
+                    staleWaves   = 0;
+                    cerr << "  [phase 2] reheat at t=" << (int)elapsed()
+                         << "s bestK=" << bestK << "\n";
+                }
+            }
             // Deterministic polish between waves, capped at ~10% of the
             // phase's elapsed time so it never starves the SA walk.
             if (phase == 2 && kRepair &&
@@ -1667,6 +1684,11 @@ int main(int argc, char** argv) {
     int    lexkArg   = 0;     // phase-2 lexicographic fitness, 1 to enable
     int    krepairArg = 0;    // inter-wave deterministic k-repair, 1 to enable
     string initMode  = "auto";
+    double p1T0   = 50.0;     // phase-1 starting temperature (paper Table 1)
+    double p2T0   = 1.0;      // phase-2 starting temperature
+    double p2DecT = 0.9999;   // phase-2 per-move cooling factor
+    int    reheatArg = 0;     // phase-2 stagnation reheat, waves (0 = off)
+    int    polishArg = 0;     // final deterministic k-repair polish (0 = off)
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -1683,6 +1705,11 @@ int main(int argc, char** argv) {
         else if (a == "--lexk")              lexkArg    = atoi(need("--lexk"));
         else if (a == "--krepair")           krepairArg = atoi(need("--krepair"));
         else if (a == "--init")              initMode   = need("--init");
+        else if (a == "--p1-t0")             p1T0       = atof(need("--p1-t0"));
+        else if (a == "--p2-t0")             p2T0       = atof(need("--p2-t0"));
+        else if (a == "--p2-dect")           p2DecT     = atof(need("--p2-dect"));
+        else if (a == "--reheat")            reheatArg  = atoi(need("--reheat"));
+        else if (a == "--polish")            polishArg  = atoi(need("--polish"));
         else if (a == "--status-file")       statusFile = need("--status-file");
         else if (a == "--status-id")         statusId   = need("--status-id");
         else if (a == "--status-interval")   statusInterval = atof(need("--status-interval"));
@@ -1711,6 +1738,7 @@ int main(int argc, char** argv) {
     solver.kBand          = kbandArg;
     solver.lexK           = (lexkArg != 0);
     solver.kRepair        = (krepairArg != 0);
+    solver.reheatWaves    = reheatArg;
     solver.initMode       = initMode;
     solver.runStartedAt   = steady_clock::now();
     if (!traceFile.empty()) ofstream(traceFile, std::ios::trunc);  // start clean
@@ -1738,10 +1766,29 @@ int main(int argc, char** argv) {
     // Paper parameters (Table 1):
     //   min cross : initT=50  decT=0.999  decTW=0.99  tLim=0.01
     //   min k     : initT=1   decT=0.9999 decTW=0.99  tLim=0.01
-    solver.runSA(/*phase*/1, 50.0,  0.999, 0.99, 0.01, phase1Min * 60.0);
+    solver.runSA(/*phase*/1, p1T0,  0.999, 0.99, 0.01, phase1Min * 60.0);
 
     double remaining = max(0.0, (totalMin - phase1Min) * 60.0);
-    solver.runSA(/*phase*/2,  1.0, 0.9999, 0.99, 0.01, remaining);
+    // Final-polish budget is carved out of phase 2 so -t stays honest.
+    double polishSec = polishArg ? min(15.0, 0.05 * totalMin * 60.0) : 0.0;
+    solver.runSA(/*phase*/2, p2T0, p2DecT, 0.99, 0.01, remaining - polishSec);
+
+    if (polishArg) {
+        // Deterministic strictly-improving polish of the best layout.
+        // Unlike the inter-wave --krepair (which disrupts the cooled SA
+        // walk), this runs once at the very end, so it can only improve.
+        solver.restoreBest();
+        auto t0 = steady_clock::now();
+        int rounds = 0, committed = 0;
+        while (duration_cast<duration<double>>(
+                   steady_clock::now() - t0).count() < polishSec) {
+            int c = solver.kRepairPass(/*maxEdges*/32, /*candsPerNode*/96);
+            committed += c; rounds++;
+            if (c == 0) break;
+        }
+        cerr << "[polish] rounds=" << rounds << " moves=" << committed
+             << "  bestK=" << solver.bestK << " bestX=" << solver.bestX << "\n";
+    }
 
     cerr << "Final best: k=" << solver.bestK
          << " totalX=" << solver.bestX << "\n";

@@ -48,6 +48,7 @@ GRAPH_GROUPS = {
 METHOD_COLORS = {
     "sa":                     "#4361ee",
     "sa-stress":              "#06d6a0",
+    "sa-stress-pro":          "#0496ff",
     "staged":                 "#7209b7",
     "ils":                    "#f72585",
     "staged-adaptive":        "#f4a261",
@@ -359,6 +360,14 @@ def _stages_sa_stress():
             # layout when it is good and falls back to BFS-snake if the init
             # stage failed and passed through a poor layout
             {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True}]
+def _stages_sa_stress_pro():
+    return [{"bin": "stress", "tag": "init", "frac": "init"},
+            # sa-stress + end-of-budget deterministic k-repair polish and
+            # phase-2 stagnation reheat (escape frozen local optima on
+            # long budgets). 2026-06-11 short A/Bs: within noise at 2-4 min,
+            # polish structurally cannot worsen the saved best.
+            {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
+             "extra": ["--polish", "1", "--reheat", "15"]}]
 def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
 def _stages_staged(lns_mode):
     return [{"bin": "approach1", "mode": lns_mode, "tag": "lns", "frac": "lns"},
@@ -367,6 +376,7 @@ def _stages_staged(lns_mode):
 METHODS = [
     {"id": "sa",                   "label": "SA",                 "kband": 2,  "stages": _stages_sa()},
     {"id": "sa-stress",            "label": "SA (stress init)",   "kband": 2,  "stages": _stages_sa_stress()},
+    {"id": "sa-stress-pro",        "label": "SA (stress+polish)", "kband": 2,  "stages": _stages_sa_stress_pro()},
     {"id": "ils",                  "label": "ILS",                "kband": 2,  "stages": _stages_ils()},
     {"id": "staged",               "label": "Staged",             "kband": 2,  "stages": _stages_staged("lns")},
     {"id": "staged-adaptive",      "label": "Staged-Adaptive",    "kband": 2,  "stages": _stages_staged("lns-adaptive")},
@@ -456,6 +466,7 @@ def run_method(spec, gpath, total_min, p1_frac, seed, out_dir, suffix,
                 cmd += ["--kband", str(kband)]
             if st.get("initmode"):
                 cmd += ["--init", st["initmode"]]
+            cmd += st.get("extra", [])
         rc, sec = _run(cmd, log)
         if rc_final == 0:
             rc_final = rc
