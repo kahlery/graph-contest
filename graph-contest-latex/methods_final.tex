@@ -63,18 +63,30 @@
 \end{frame}
 
 \begin{frame}{Method Shoot-Out: Same Seeds, Same Budgets}
-  All five methods, all nine instances, one controlled run
-  (4 workers $\times$ seed 42--45, budgets 2/4/6\,min by size; best of 4 workers shown):
+  All five methods, all nine instances, one controlled sweep
+  (4 workers, seeds 42--45, budgets 2/4/6\,min by size; best $k$ of 4 workers; all outputs validated):
   \begin{center}
     \footnotesize
-    % RESULTS-TABLE-PLACEHOLDER (filled from results/runs/<final-method-comparison>)
     \begin{tabular}{lrrrrr}
       \toprule
-      \textbf{Graph} & \texttt{sa} & \texttt{sa-stress} & \texttt{ils} & \texttt{staged} & \texttt{staged-adaptive} \\
+      \textbf{Graph} & \texttt{sa} & \texttt{sa-stress} & \texttt{ils} & \texttt{staged} & \texttt{st.-adaptive} \\
       \midrule
-      Automatic-1 & & & & & \\
-      Automatic-9 & & & & & \\
+      Automatic-1 & \textbf{9}  & \textbf{9}  & \textbf{9}  & \textbf{9}  & \textbf{9}  \\
+      Automatic-2 & 4           & 4           & \textbf{3}  & \textbf{3}  & \textbf{3}  \\
+      Automatic-3 & \textbf{35} & 37          & 37          & 37          & 37          \\
+      Automatic-4 & 7           & \textbf{6}  & 7           & 7           & 7           \\
+      Automatic-5 & 77          & \textbf{75} & 79          & 78          & 78          \\
+      Automatic-6 & \textbf{669}& 737         & 787         & 754         & 765         \\
+      Automatic-7 & 50          & \textbf{29} & 57          & 52          & 53          \\
+      Automatic-8 & 47          & \textbf{8}  & 309         & 52          & 48          \\
+      Automatic-9 & 57          & \textbf{11} & 53          & 59          & 56          \\
       \bottomrule
     \end{tabular}
   \end{center}
+  \smallskip
+  \begin{itemize}
+    \item \texttt{sa-stress} wins or ties \textbf{6 of 9} --- and by $2$--$6\times$ where
+          the canvas is tight (A7/A8/A9).
+    \item Dense A6 is the exception: plain \texttt{sa} wins; stress init actively hurts there.
+  \end{itemize}
 \end{frame}
