@@ -1,0 +1,80 @@
+\section{The Methods}
+
+\begin{frame}{One Engine, Five Methods}
+  \textbf{Shared core:} every method runs on the same incremental machinery ---
+  per-move crossing deltas, spatial grids for candidate lookup, strict validity
+  (no vertex on a foreign edge), and best-snapshot bookkeeping.
+  \medskip
+  \begin{center}
+    \footnotesize
+    \begin{tabular}{llll}
+      \toprule
+      \textbf{Method} & \textbf{Pipeline} & \textbf{Escapes local optima by} & \textbf{Binary} \\
+      \midrule
+      \texttt{sa}        & two-phase SA                    & temperature waves            & \texttt{sakgd} \\
+      \texttt{sa-stress} & \textbf{stress init} $\to$ SA   & better start + waves         & \texttt{sfdp} + \texttt{sakgd} \\
+      \texttt{staged}    & LNS (30\%) $\to$ SA (70\%)      & SA stage after greedy LNS    & \texttt{approach1} \\
+      \texttt{staged-adaptive} & adaptive-LNS $\to$ SA     & growing neighbourhoods       & \texttt{approach1} \\
+      \texttt{ils}       & SA rounds + random kicks        & perturbation between rounds  & \texttt{approach1} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  \medskip
+  \textbf{Two-phase SA} (after the winning GD'25 entry):
+  phase 1 minimises total crossings $\chi$ (untangles the drawing),
+  phase 2 minimises the bottleneck $k$ with a dual fitness:
+  $\Delta E = \Delta K_{\text{local}}$ if a touched edge's $k$ changes,
+  else $\Delta\chi/\chi$ as a tiny tie-break.
+\end{frame}
+
+\begin{frame}{Inside the SA Loop: Moves, Waves, Snapshots}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \textbf{One move:}
+      \begin{enumerate}
+        \item pick a vertex --- crossing-weighted; in phase 2, biased to
+              \emph{$k$-critical} endpoints,
+        \item propose a position (Gaussian around current; radius shrinks
+              with temperature),
+        \item reject if occupied or vertex-on-edge,
+        \item Metropolis: accept if $\Delta E\le 0$, else with
+              probability $e^{-\Delta E/T}$.
+      \end{enumerate}
+      \medskip
+      \textbf{Temperature waves:} inner loop cools $T$ per move;
+      the outer loop restarts each wave from the best-so-far solution
+      at a slightly lower starting temperature.
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \textbf{Best-snapshot bookkeeping:}
+      \begin{itemize}
+        \item \texttt{saveBest()} --- whenever $(k,\chi)$ improves, copy the
+              positions into \texttt{bestPos} (three fields, \emph{in RAM}).
+        \item \texttt{restoreBest()} --- copy \texttt{bestPos} back and rebuild
+              the tables: at wave ends, and once more before writing output.
+      \end{itemize}
+      \medskip
+      \textbf{Stateless by design:} no files, no caches, nothing survives the
+      process. Two runs on the same input are fully independent ---
+      warm-starting across runs exists only as an explicit, off-by-default
+      pipeline flag.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Method Shoot-Out: Same Seeds, Same Budgets}
+  All five methods, all nine instances, one controlled run
+  (4 workers $\times$ seed 42--45, budgets 2/4/6\,min by size; best of 4 workers shown):
+  \begin{center}
+    \footnotesize
+    % RESULTS-TABLE-PLACEHOLDER (filled from results/runs/<final-method-comparison>)
+    \begin{tabular}{lrrrrr}
+      \toprule
+      \textbf{Graph} & \texttt{sa} & \texttt{sa-stress} & \texttt{ils} & \texttt{staged} & \texttt{staged-adaptive} \\
+      \midrule
+      Automatic-1 & & & & & \\
+      Automatic-9 & & & & & \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+\end{frame}
