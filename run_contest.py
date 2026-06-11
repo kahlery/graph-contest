@@ -373,9 +373,10 @@ def _stages_sa_stress_pro():
 def _stages_sa_stress_sq2():
     return [{"bin": "stress", "tag": "init", "frac": "init"},
             # sa-stress with the squared-crossings k-neutral tie-break
-            # (--fit sq2). 2026-06-11 4-seed A/B: mean equal to sa-stress,
-            # variance higher with lower lows (A7 27, A3 37) — useful as
-            # portfolio diversity when taking best-of-workers.
+            # (--fit sq2). 2026-06-11 verdict: beats sa-stress on dense A6
+            # (765->701) but only by compensating the poor stress init —
+            # plain-init SA + sq2 (656) did NOT beat the plain-SA A6 record
+            # (624). Keep for best-of-workers portfolio diversity only.
             {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
              "extra": ["--fit", "sq2"]}]
 def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
