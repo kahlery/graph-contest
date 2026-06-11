@@ -30,6 +30,7 @@ Minimise **k = max crossings on any single edge**, breaking ties by total crossi
 | `run_contest.py` | Batch runner: solves the 9 contest graphs with each method (`sa`, `staged`, `ils`, `lns`), tracks every run in `results/runs/`, maintains best-ever layouts in `results/best/`, and generates `results/report.html`. |
 | `dashboard/index.html` | Vanilla-JS frontend for the live dashboard. |
 | `data/` | Input graphs (JSON) and example solutions. |
+| `data/gda-testing/` | External benchmark suite from [YouSafe/gda-testing](https://github.com/YouSafe/gda-testing) — 219 generated graphs (circulant, kronecker, SBM, random planar, etc.) plus a reference team's k-results (`stats/team-1-*.csv`) for generalization checks beyond Automatic-1..9. |
 | `results/` | Best outputs per contest graph, plus per-run logs. |
 | `Makefile` | `make` / `make debug` / `make clean`. |
 
@@ -206,6 +207,10 @@ python3 run_contest.py --minutes 10 --methods sa,staged,ils --warm-start
 
 # Just regenerate the HTML report without running the solver
 python3 run_contest.py --report-only
+
+# Also run a graph from the gda-testing benchmark suite (data/gda-testing/graphs/);
+# entries are ";"-separated so commas in filenames are unambiguous
+python3 run_contest.py --methods sa-stress --graphs "8;circulant_graph/100_[1,2,3].json"
 ```
 
 **Methods**

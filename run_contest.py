@@ -31,6 +31,9 @@ from pathlib import Path
 
 ROOT      = Path(__file__).resolve().parent
 DATA_DIR  = ROOT / "data" / "live-2025-contest" / "live-contest"
+# Extra benchmark suite (https://github.com/YouSafe/gda-testing) for
+# generalization checks beyond the 9 official contest graphs.
+GDA_DIR   = ROOT / "data" / "gda-testing" / "graphs"
 SAKGD     = ROOT / "sakgd"
 APPROACH1 = ROOT / "approach1"
 STRESS_INIT = ROOT / "tools" / "stress_init.py"
@@ -70,21 +73,48 @@ VERIFY_RE  = re.compile(
 # helpers
 # ---------------------------------------------------------------------------
 def parse_graph_spec(spec):
-    out = set()
-    for part in spec.split(","):
-        part = part.strip()
-        if not part:
+    """Parse --graphs.
+
+    Numeric tokens / ranges (e.g. "1-9", "1,3,5") refer to the official
+    Automatic-N contest graphs in DATA_DIR, as before.
+
+    Top-level entries are separated by ";". A non-numeric entry (containing
+    "/" or ending in ".json") is treated as a path -- relative to GDA_DIR, or
+    absolute -- into the gda-testing benchmark suite, e.g.
+    "circulant_graph/100_[1,2,3].json". Using ";" lets such paths contain
+    commas without ambiguity.
+    """
+    nums, extra = set(), []
+    for chunk in spec.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
             continue
-        if "-" in part:
-            a, b = part.split("-", 1)
-            out.update(range(int(a), int(b) + 1))
-        else:
-            out.add(int(part))
-    return sorted(out)
+        if "/" in chunk or chunk.lower().endswith(".json"):
+            extra.append(chunk)
+            continue
+        for part in chunk.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                a, b = part.split("-", 1)
+                nums.update(range(int(a), int(b) + 1))
+            else:
+                nums.add(int(part))
+    return sorted(nums) + extra
 
 
 def graph_path(idx):
-    return DATA_DIR / f"Automatic-{idx}.json"
+    if isinstance(idx, int):
+        return DATA_DIR / f"Automatic-{idx}.json"
+    p = Path(idx)
+    return p if p.is_absolute() else GDA_DIR / p
+
+
+def graph_name(idx, path):
+    if isinstance(idx, int):
+        return path.stem
+    return idx.replace("/", "__").rsplit(".json", 1)[0]
 
 
 def graph_size(path):
@@ -1524,13 +1554,15 @@ def main():
     print(f"[run] estimated wall-clock: {total_est:.0f} min ({total_est/60:.1f}h)\n")
 
     all_combos = []
+    gnames     = []
 
     for idx in indices:
         gpath_orig = graph_path(idx)
         if not gpath_orig.exists():
             print(f"[skip] {gpath_orig} not found")
             continue
-        gname   = gpath_orig.stem
+        gname   = graph_name(idx, gpath_orig)
+        gnames.append(gname)
         n, m_e  = graph_size(gpath_orig)
         budget  = budget_for(idx, minutes_map)
         nh_size = max(3, min(n // 10, args.nh_size_cap))
@@ -1626,7 +1658,7 @@ def main():
                     "timestamp":   datetime.now().isoformat(timespec="seconds"),
                     "methods":     methods,
                     "workers":     args.workers,
-                    "graphs":      [f"Automatic-{i}" for i in indices],
+                    "graphs":      list(gnames),
                     "minutes_map": minutes_map,
                     "combos":      all_combos,
                 })

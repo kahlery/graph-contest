@@ -137,6 +137,27 @@ def api_methods():
             for m in METHODS]
 
 
+def api_gda_graphs():
+    """List the gda-testing benchmark graphs (grouped by category) for the
+    extra-graphs picker. Each entry's value is a --graphs token usable
+    directly (relative path under data/gda-testing/graphs)."""
+    from run_contest import GDA_DIR, graph_size
+    out = {}
+    if not GDA_DIR.exists():
+        return out
+    for f in sorted(GDA_DIR.rglob("*.json")):
+        rel = f.relative_to(GDA_DIR)
+        cat = rel.parts[0]
+        try:
+            n, m = graph_size(f)
+        except Exception:
+            continue
+        out.setdefault(cat, []).append({
+            "value": str(rel), "label": rel.name, "n": n, "m": m,
+        })
+    return out
+
+
 def api_live():
     rd = _latest_run_dir()
     if not rd:
@@ -292,6 +313,15 @@ _CTRL_PANEL = """
   <div class="cfg-section">
     <div class="cfg-label">Graphs</div>
     <input id="cfg-graphs" type="text" class="cfg-input" value="1-9" placeholder="1-9 or 1,3,5">
+    <div style="display:flex;gap:5px;margin-top:5px">
+      <select id="gda-cat" class="cfg-input" style="flex:1"></select>
+      <select id="gda-graph" class="cfg-input" style="flex:2"></select>
+      <button type="button" class="btn" style="padding:4px 10px;font-size:.78rem"
+              onclick="gdaAddGraph()">+ Add</button>
+    </div>
+    <div style="font-size:.7rem;color:var(--muted);margin-top:3px">
+      gda-testing benchmark suite — picks append to the field above (";"-separated)
+    </div>
   </div>
 
   <div class="cfg-section">
@@ -377,6 +407,40 @@ _CTRL_JS = r"""
       renderMethodBoxes(await r.json());
     } catch (e) { console.warn('methods load failed', e); }
   }
+
+  // ── gda-testing benchmark graph picker ──────────────────────────────────
+  let GDA_GRAPHS = {};
+
+  function renderGdaGraph() {
+    const cat = document.getElementById('gda-cat')?.value;
+    const sel = document.getElementById('gda-graph');
+    if (!sel || !cat) return;
+    sel.innerHTML = (GDA_GRAPHS[cat] || []).map(g =>
+      `<option value="${g.value}">${g.label} (n=${g.n}, m=${g.m})</option>`
+    ).join('');
+  }
+
+  async function loadGdaGraphs() {
+    try {
+      const r = await fetch('/api/gda-graphs');
+      GDA_GRAPHS = await r.json();
+      const catSel = document.getElementById('gda-cat');
+      if (!catSel) return;
+      catSel.innerHTML = Object.keys(GDA_GRAPHS).sort().map(c =>
+        `<option value="${c}">${c}</option>`
+      ).join('');
+      catSel.onchange = renderGdaGraph;
+      renderGdaGraph();
+    } catch (e) { console.warn('gda-graphs load failed', e); }
+  }
+
+  window.gdaAddGraph = function () {
+    const val = document.getElementById('gda-graph')?.value;
+    if (!val) return;
+    const field = document.getElementById('cfg-graphs');
+    const cur   = field.value.trim();
+    field.value = cur ? `${cur};${val}` : val;
+  };
 
   // ── config helpers ─────────────────────────────────────────────────────────
   function readCfg() {
@@ -746,7 +810,7 @@ _CTRL_JS = r"""
   };
 
   // Render method checkboxes first (so the first syncCfg can tick them), then poll.
-  (async () => { await loadMethods(); poll(); })();
+  (async () => { await loadMethods(); await loadGdaGraphs(); poll(); })();
 })();
 """
 
@@ -780,6 +844,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(api_status())
         elif path == "/api/methods":
             self._json(api_methods())
+        elif path == "/api/gda-graphs":
+            self._json(api_gda_graphs())
         elif path == "/api/live":
             self._json(api_live())
         else:
