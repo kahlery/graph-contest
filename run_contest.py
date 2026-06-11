@@ -363,9 +363,10 @@ def _stages_sa_stress():
 def _stages_sa_stress_pro():
     return [{"bin": "stress", "tag": "init", "frac": "init"},
             # sa-stress + end-of-budget deterministic k-repair polish and
-            # phase-2 stagnation reheat (escape frozen local optima on
-            # long budgets). 2026-06-11 short A/Bs: within noise at 2-4 min,
-            # polish structurally cannot worsen the saved best.
+            # phase-2 stagnation reheat. 2026-06-11 verdict: LOST the 15-min
+            # paired A/B (A3 37->38, A7 29=29, A9 10->11; 105 reheats broke
+            # the cold-phase fine descent). Kept only for further parameter
+            # exploration — prefer plain sa-stress.
             {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
              "extra": ["--polish", "1", "--reheat", "15"]}]
 def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
