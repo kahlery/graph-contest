@@ -50,6 +50,13 @@ METHOD_COLORS = {
     "sa-stress":              "#06d6a0",
     "sa-stress-pro":          "#0496ff",
     "sa-stress-sq2":          "#ffb703",
+    "sa-stress-cong":         "#e07a5f",
+    "sa-stress-swap":         "#d62828",
+    "sa-stress-lahc":         "#8338ec",
+    "sa-stress-thr":          "#3a86ff",
+    "sa-hilbert":             "#2a9d8f",
+    "sa-cong":                "#bc6c25",
+    "sa-swap":                "#9d0208",
     "staged":                 "#7209b7",
     "ils":                    "#f72585",
     "staged-adaptive":        "#f4a261",
@@ -379,6 +386,15 @@ def _stages_sa_stress_sq2():
             # (624). Keep for best-of-workers portfolio diversity only.
             {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
              "extra": ["--fit", "sq2"]}]
+# --- 2026-06-13 research-driven mechanisms (each A/B-able in isolation) ------
+# These reuse the strong stress-init base and add ONE solver mechanism in the
+# final SA stage, so a same-batch A/B isolates that mechanism's effect.
+def _stages_sa_stress_extra(*flags):
+    return [{"bin": "stress", "tag": "init", "frac": "init"},
+            {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
+             "extra": list(flags)}]
+def _stages_sa_extra(*flags):
+    return [{"bin": "sakgd", "frac": "full", "extra": list(flags)}]
 def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
 def _stages_staged(lns_mode):
     return [{"bin": "approach1", "mode": lns_mode, "tag": "lns", "frac": "lns"},
@@ -389,6 +405,15 @@ METHODS = [
     {"id": "sa-stress",            "label": "SA (stress init)",   "kband": 2,  "stages": _stages_sa_stress()},
     {"id": "sa-stress-sq2",        "label": "SA (stress+sq2)",    "kband": 2,  "stages": _stages_sa_stress_sq2()},
     {"id": "sa-stress-pro",        "label": "SA (stress+polish)", "kband": 2,  "stages": _stages_sa_stress_pro()},
+    # 2026-06-13 research-driven mechanisms (stress-init base + one mechanism):
+    {"id": "sa-stress-cong",       "label": "SA (stress+cong)",   "kband": 2,  "stages": _stages_sa_stress_extra("--place", "cong")},
+    {"id": "sa-stress-swap",       "label": "SA (stress+swap)",   "kband": 2,  "stages": _stages_sa_stress_extra("--swap", "1")},
+    {"id": "sa-stress-lahc",       "label": "SA (stress+LAHC)",   "kband": 2,  "stages": _stages_sa_stress_extra("--accept", "lahc")},
+    {"id": "sa-stress-thr",        "label": "SA (stress+thresh)", "kband": 2,  "stages": _stages_sa_stress_extra("--accept", "threshold")},
+    {"id": "sa-hilbert",           "label": "SA (hilbert init)",  "kband": 2,  "stages": _stages_sa_extra("--init", "hilbert")},
+    # dense-A6 variants on plain init (stress hurts A6):
+    {"id": "sa-cong",              "label": "SA (cong)",          "kband": 2,  "stages": _stages_sa_extra("--place", "cong")},
+    {"id": "sa-swap",              "label": "SA (swap)",          "kband": 2,  "stages": _stages_sa_extra("--swap", "1")},
     {"id": "ils",                  "label": "ILS",                "kband": 2,  "stages": _stages_ils()},
     {"id": "staged",               "label": "Staged",             "kband": 2,  "stages": _stages_staged("lns")},
     {"id": "staged-adaptive",      "label": "Staged-Adaptive",    "kband": 2,  "stages": _stages_staged("lns-adaptive")},
@@ -491,23 +516,100 @@ def run_method(spec, gpath, total_min, p1_frac, seed, out_dir, suffix,
 # ---------------------------------------------------------------------------
 # parallel multi-start wrapper
 # ---------------------------------------------------------------------------
+def _final_stage_extra(method):
+    """Extra solver flags attached to a method's final stage (for xchg rounds)."""
+    stages = METHOD_BY_ID[method]["stages"]
+    return stages[-1].get("extra", [])
+
+
+def _verify_k(path):
+    """Independent k of a layout JSON via the solver's --verify (None if invalid)."""
+    try:
+        r = subprocess.run([str(SAKGD), "--verify", str(path)],
+                           capture_output=True, text=True, timeout=600)
+        mk = re.search(r"k=(\d+)", r.stdout)
+        ov = "vertexEdgeOverlap=no" in r.stdout
+        return int(mk.group(1)) if (mk and ov) else None
+    except Exception:
+        return None
+
+
+def _elect_elite(out_dir, method, n_workers, r, elite):
+    """Copy the lowest-k valid round-r worker layout into the shared elite file."""
+    best_k, best_p = None, None
+    for wid in range(n_workers):
+        p = out_dir / f"{method}_w{wid}_r{r}.json"
+        if not p.exists():
+            continue
+        k = _verify_k(p)
+        if k is not None and (best_k is None or k < best_k):
+            best_k, best_p = k, p
+    if best_p is not None:
+        shutil.copyfile(best_p, elite)
+
+
 def run_combo(method, gpath, total_min, p1_frac, base_seed,
               out_dir, n_workers, nh_size, nh_cands, lns_frac, ils_perturb,
-              gpath_warm=None):
-    """Run n_workers in parallel with different seeds; return list of worker results."""
+              gpath_warm=None, xchg_rounds=1):
+    """Run n_workers in parallel with different seeds; return list of worker results.
+
+    If xchg_rounds > 1, workers cooperate: the budget is split into R rounds and,
+    at a barrier after each round, every worker warm-starts the next round from
+    the single best ("elite") layout found so far. This turns an independent
+    portfolio into a cooperative multi-start — effective where k keeps falling
+    with budget (dense A6). Round 0 runs the full method (incl. its init stage);
+    later rounds run one sakgd stage from the elite with --init input.
+    """
+    kband     = METHOD_BY_ID[method].get("kband", 2)
+    extra     = _final_stage_extra(method)
+    elite     = out_dir / f"{method}_elite.json"
+    barrier   = threading.Barrier(n_workers) if xchg_rounds > 1 else None
+    elite_lk  = threading.Lock()
 
     def worker(wid):
         seed   = base_seed + wid
         suffix = f"_w{wid}"
         inp    = gpath_warm if (gpath_warm and Path(gpath_warm).exists()) else gpath
         t0     = time.time()
-        out, rc, sec, flog, glog = run_method(
-            METHOD_BY_ID[method], inp, total_min, p1_frac, seed, out_dir, suffix,
-            nh_size, nh_cands, ils_perturb, lns_frac)
 
-        first  = parse_log(flog)
-        final  = parse_log(glog)
-        wall   = time.time() - t0
+        if xchg_rounds <= 1:
+            out, rc, sec, flog, glog = run_method(
+                METHOD_BY_ID[method], inp, total_min, p1_frac, seed, out_dir, suffix,
+                nh_size, nh_cands, ils_perturb, lns_frac)
+            first = parse_log(flog)
+            final = parse_log(glog)
+        else:
+            rmin   = total_min / xchg_rounds
+            first  = None
+            out    = None
+            for r in range(xchg_rounds):
+                if r == 0:
+                    out, rc, sec, flog, glog = run_method(
+                        METHOD_BY_ID[method], inp, rmin, p1_frac,
+                        seed + r * 1000, out_dir, f"{suffix}_r{r}",
+                        nh_size, nh_cands, ils_perturb, lns_frac)
+                    first = parse_log(flog)
+                else:
+                    # warm-start one sakgd stage from the shared elite layout.
+                    out  = out_dir / f"{method}{suffix}_r{r}.json"
+                    glog = out_dir / f"{method}{suffix}_r{r}.log"
+                    cmd  = [str(SAKGD), "-i", str(elite if elite.exists() else inp),
+                            "-o", str(out), "-t", mins(rmin),
+                            "-p1", mins(rmin * 0.02), "-s", str(seed + r * 1000),
+                            "--init", "input"]
+                    if kband != 2:
+                        cmd += ["--kband", str(kband)]
+                    cmd += extra
+                    rc, sec = _run(cmd, glog)
+                final = parse_log(glog)
+                # Barrier: everyone finishes the round, worker 0 elects elite.
+                if barrier is not None:
+                    barrier.wait()
+                    if wid == 0:
+                        _elect_elite(out_dir, method, n_workers, r, elite)
+                    barrier.wait()
+
+        wall = time.time() - t0
         return {
             "worker_id":      wid,
             "seed":           seed,
@@ -1512,6 +1614,9 @@ def main():
     ap.add_argument("--nh-size-cap",     type=int,   default=40)
     ap.add_argument("--nh-cands",        type=int,   default=30)
     ap.add_argument("--ils-perturb",     type=int,   default=0)
+    ap.add_argument("--xchg-rounds",     type=int,   default=1,
+                    help="cross-worker best-exchange rounds (1 = off; workers "
+                         "warm-start each round from the shared elite layout)")
     ap.add_argument("--seed",            type=int,   default=42)
     ap.add_argument("--out-dir",         default="results")
     ap.add_argument("--run-name",        default="",
@@ -1615,7 +1720,7 @@ def main():
                 method, gpath_orig, budget, args.p1_frac, args.seed,
                 out_dir, args.workers, nh_size, args.nh_cands,
                 args.staged_lns_frac, args.ils_perturb,
-                gpath_warm=warm_path,
+                gpath_warm=warm_path, xchg_rounds=args.xchg_rounds,
             )
             t_wall = time.time() - t_wall_start
 
