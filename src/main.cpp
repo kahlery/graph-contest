@@ -622,6 +622,17 @@ public:
                                      // crossing edges, not just the k band)
     int            reheatWaves = 0; // phase-2: waves without a bestK drop
                                     // before resetting temp to initT (0 = off)
+    int            placeMode = 0;   // 0 = plain Gaussian proposal,
+                                    // 1 = congestion-aware (pick emptiest of
+                                    // C Gaussian candidates by edge-grid cell)
+    int            acceptMode = 0;  // 0 = Metropolis, 1 = threshold-accepting,
+                                    // 2 = late-acceptance hill climbing (LAHC)
+    bool           swapMove = false; // when a proposal lands on an occupied
+                                     // point, swap the two vertices instead of
+                                     // discarding the (otherwise wasted) move
+    vector<double> lahcHist;        // LAHC: rolling history of fitness values
+    size_t         lahcIdx  = 0;
+    double         fitAcc   = 0.0;  // LAHC scalar: cumulative accepted dE
     bool           kRepair  = false; // deterministic polish between waves
                                      // off by default: A/B on Automatic-8
                                      // showed it disrupts the cooled SA walk
@@ -668,7 +679,10 @@ public:
     // points. Graph-close vertices land geometrically close, so edges stay
     // short and crossings local — a far better SA start than a tangled
     // structured drawing.
-    void bfsSnakeLayout() {
+    // BFS visit order over all components: graph-adjacent vertices land near
+    // each other in the order, so any locality-preserving space-filling path
+    // (snake or Hilbert) keeps their geometric distance small too.
+    vector<int> bfsOrder() {
         vector<int> order;
         order.reserve(n);
         vector<char> seen(n, 0);
@@ -688,6 +702,48 @@ public:
                 }
             }
         }
+        return order;
+    }
+
+    // Map a Hilbert-curve distance d (0..S^2-1) to grid cell (x,y), S = 2^k.
+    static void hilbertD2XY(ll S, ll d, ll& x, ll& y) {
+        x = 0; y = 0;
+        for (ll s = 1; s < S; s <<= 1) {
+            ll rx = 1 & (d / 2);
+            ll ry = 1 & (d ^ rx);
+            if (ry == 0) {                       // rotate quadrant
+                if (rx == 1) { x = s - 1 - x; y = s - 1 - y; }
+                ll t = x; x = y; y = t;
+            }
+            x += s * rx;
+            y += s * ry;
+            d /= 4;
+        }
+    }
+
+    // Like bfsSnakeLayout but lays the BFS order along a Hilbert curve. The
+    // Hilbert curve preserves 2-D locality better than a boustrophedon: two
+    // points close in curve order are always close in the plane (the snake
+    // only guarantees this within a row), so graph neighbours stay nearer and
+    // edges stay shorter. Cheap deterministic init, an extra auto candidate.
+    void hilbertLayout() {
+        vector<int> order = bfsOrder();
+        ll side = 1;
+        while (side * side < (ll)n) side <<= 1;   // smallest 2^k with side^2>=n
+        ll dx = max<ll>(1, W / max<ll>(1, side - 1));
+        ll dy = max<ll>(1, H / max<ll>(1, side - 1));
+        mt19937_64 jr(0x5EEDB0B5ull);
+        for (size_t idx = 0; idx < order.size(); idx++) {
+            ll hx, hy;
+            hilbertD2XY(side, (ll)idx, hx, hy);
+            ll x = min(W, hx * dx + (dx > 1 ? (ll)(jr() % (uint64_t)dx) : 0));
+            ll y = min(H, hy * dy + (dy > 1 ? (ll)(jr() % (uint64_t)dy) : 0));
+            pos[order[idx]] = {ox + x, oy + y};
+        }
+    }
+
+    void bfsSnakeLayout() {
+        vector<int> order = bfsOrder();
         ll cols = max<ll>(2, (ll)llround(ceil(
             sqrt((double)n * (double)max<ll>(1, W) / (double)max<ll>(1, H)))));
         ll rows = max<ll>(2, (n + cols - 1) / cols);
@@ -773,7 +829,12 @@ public:
         // and computeAllCrossings alone takes minutes on it). In auto mode,
         // sample-estimate the crossing density of the input layout and of a
         // BFS snake layout, and keep whichever is clearly sparser.
-        if (initMode != "input" && n > 1) {
+        if (initMode == "hilbert" && n > 1) {
+            // Forced Hilbert init (skip the sampling race; deterministic).
+            hilbertLayout();
+            cerr << "init: forced hilbert layout, avg crossings/edge≈"
+                 << estimateAvgCross(300) << "\n";
+        } else if (initMode != "input" && n > 1) {
             double inAvg = estimateAvgCross(300);
             vector<Pt> inputPos = pos;
             bfsSnakeLayout();
@@ -781,16 +842,25 @@ public:
             vector<Pt> snakePos = pos;
             barycenterSmooth(50);
             double smAvg = estimateAvgCross(300);
+            vector<Pt> smoothPos = pos;
+            // Hilbert is a cheap extra candidate in auto mode.
+            hilbertLayout();
+            double hbAvg = estimateAvgCross(300);
+            vector<Pt> hilbPos = pos;
             const char* chosen;
-            if (initMode != "bfs" && !(min(snAvg, smAvg) < 0.8 * inAvg)) {
-                pos = inputPos;  chosen = "input";
+            double bestConstr = min(min(snAvg, smAvg), hbAvg);
+            if (initMode != "bfs" && !(bestConstr < 0.8 * inAvg)) {
+                pos = inputPos;   chosen = "input";
+            } else if (hbAvg <= smAvg && hbAvg <= snAvg) {
+                pos = hilbPos;    chosen = "hilbert";
             } else if (smAvg <= snAvg) {
-                chosen = "bfs-snake+smooth";
+                pos = smoothPos;  chosen = "bfs-snake+smooth";
             } else {
-                pos = snakePos;  chosen = "bfs-snake";
+                pos = snakePos;   chosen = "bfs-snake";
             }
             cerr << "init: avg crossings/edge  input≈" << inAvg
                  << "  bfs-snake≈" << snAvg << "  +smooth≈" << smAvg
+                 << "  hilbert≈" << hbAvg
                  << "  -> using " << chosen << " layout\n";
         }
 
@@ -1268,6 +1338,34 @@ public:
         }
 
         normal_distribution<double> nd(0.0, sigma);
+
+        // Congestion-aware proposal: draw C Gaussian candidates and keep the
+        // one landing in the least edge-dense grid cell. The edge grid's
+        // per-cell vector size is exactly "how many edges' bounding boxes
+        // cover this cell" — a cheap local congestion signal. Picking the
+        // emptiest cell biases bottleneck endpoints toward landing spots that
+        // are likely to shed crossings, without touching planMove.
+        if (placeMode == 1) {
+            ll bestX = pos[v].x, bestY = pos[v].y;
+            int bestDen = INT_MAX;
+            for (int c = 0; c < 3; c++) {
+                ll cx = pos[v].x + (ll)llround(nd(rng));
+                ll cy = pos[v].y + (ll)llround(nd(rng));
+                if (cx < ox) cx = ox; if (cx > ox + W) cx = ox + W;
+                if (cy < oy) cy = oy; if (cy > oy + H) cy = oy + H;
+                int den = (int)grid.cells[grid.cy(cy) * grid.gw + grid.cx(cx)].size();
+                if (den < bestDen) { bestDen = den; bestX = cx; bestY = cy; }
+            }
+            ll nx = bestX, ny = bestY;
+            if (nx == pos[v].x && ny == pos[v].y) {
+                nx += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
+                ny += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
+                if (nx < ox) nx = ox; if (nx > ox + W) nx = ox + W;
+                if (ny < oy) ny = oy; if (ny > oy + H) ny = oy + H;
+            }
+            return {nx, ny};
+        }
+
         ll dx = (ll)llround(nd(rng));
         ll dy = (ll)llround(nd(rng));
         ll nx = pos[v].x + dx;
@@ -1415,6 +1513,89 @@ public:
         cumStaleCnt += (int)plan.edgeCounts.size();
     }
 
+    // ----- acceptance rule -------------------------------------------
+    // Decide whether to accept a move of cost delta dE at temperature
+    // currentTemp, under the active acceptMode. LAHC mutates its rolling
+    // history here so every evaluated move (normal or swap) advances it
+    // consistently; fitAcc is only updated when the move is accepted.
+    bool acceptByRule(double dE, double currentTemp) {
+        if (acceptMode == 1) {              // threshold accepting
+            return dE <= currentTemp;
+        }
+        if (acceptMode == 2) {              // late-acceptance hill climbing
+            bool acc = (dE <= 0.0) || (fitAcc + dE <= lahcHist[lahcIdx]);
+            if (acc) fitAcc += dE;
+            lahcHist[lahcIdx] = fitAcc;
+            lahcIdx = (lahcIdx + 1) % lahcHist.size();
+            return acc;
+        }
+        if (dE <= 0.0) return true;         // Metropolis (default)
+        double prob = exp(-dE / max(1e-9, currentTemp));
+        return uniform_real_distribution<double>(0.0, 1.0)(rng) < prob;
+    }
+
+    // ----- coupled two-vertex swap move ------------------------------
+    // When a Gaussian proposal lands on a point occupied by another vertex,
+    // the plain SA walk discards it (and still pays the cooling step). On a
+    // crowded canvas (Automatic-8 ~10% occupancy) that wastes ~10% of all
+    // proposals. Instead, swap v1 and the occupant v2. The swap is realised
+    // as three EXACT single-vertex moves through a free temp point T, so it
+    // reuses planMove/commitMove verbatim and keeps every incremental
+    // structure (xs, xc, kVal, totalX, grids, occupied) in sync. The net
+    // crossing/k delta is read off totalX/kVal; on reject or invalidity the
+    // swap (its own inverse) is replayed to restore the exact prior state.
+    // Returns true iff the swap was attempted (accepted or cleanly rolled
+    // back); false iff no free temp point was available (caller falls back
+    // to discarding, as before).
+    bool attemptSwap(int v1, int v2, int phase, double currentTemp,
+                     MovePlan& plan) {
+        Pt P1 = pos[v1], P2 = pos[v2];
+        // Find a free temp point: jitter around P1, then a few wider tries.
+        Pt T{0, 0};
+        bool gotT = false;
+        for (int t = 0; t < 16 && !gotT; t++) {
+            ll rx = (ll)(uniform_int_distribution<int>(-8, 8)(rng));
+            ll ry = (ll)(uniform_int_distribution<int>(-8, 8)(rng));
+            Pt cand{P1.x + rx, P1.y + ry};
+            if (cand.x < ox) cand.x = ox; if (cand.x > ox + W) cand.x = ox + W;
+            if (cand.y < oy) cand.y = oy; if (cand.y > oy + H) cand.y = oy + H;
+            if (cand == P1 || cand == P2) continue;
+            if (occupied.find(cand) == occupied.end()) { T = cand; gotT = true; }
+        }
+        if (!gotT) return false;
+
+        ll  totalX0 = totalX;
+        int kVal0   = kVal;
+
+        // Forward swap: v1: P1->T, v2: P2->P1, v1: T->P2.
+        planMove(v1, T,  plan); commitMove(plan);
+        planMove(v2, P1, plan); commitMove(plan);
+        planMove(v1, P2, plan); commitMove(plan);
+
+        ll  dCross   = totalX - totalX0;
+        int dGlobalK = kVal - kVal0;
+
+        bool valid = !wouldCauseVertexEdgeOverlapFast(v1, P2) &&
+                     !wouldCauseVertexEdgeOverlapFast(v2, P1);
+
+        double dE;
+        if (phase == 1)        dE = (double)dCross;
+        else if (dGlobalK != 0) dE = (double)dGlobalK;
+        else                    dE = (double)dCross /
+                                     max(1.0, (double)max<ll>(1, totalX));
+
+        bool acc = valid && acceptByRule(dE, currentTemp);
+        if (acc) {
+            if (kVal < bestK || (kVal == bestK && totalX < bestX)) saveBest();
+            return true;
+        }
+        // Reject / invalid: replay the swap to restore the exact prior state.
+        planMove(v1, T,  plan); commitMove(plan);
+        planMove(v2, P2, plan); commitMove(plan);
+        planMove(v1, P1, plan); commitMove(plan);
+        return true;
+    }
+
     // ----- deterministic k-repair pass --------------------------------
     // Vertex-movement primitive (Radermacher et al., JEA 2019): for the
     // endpoints of edges sitting at the bottleneck level k, evaluate a
@@ -1507,6 +1688,17 @@ public:
         int    lastBestK    = bestK;   // reheat bookkeeping
         int    staleWaves   = 0;
 
+        // LAHC: fixed-length history of the cumulative-cost trajectory. A move
+        // is accepted if it does not worsen the cost relative to the value the
+        // walk held L steps ago, which tolerates controlled worsening without
+        // an explicit temperature. Reset per phase from the current cost (0).
+        if (acceptMode == 2) {
+            const size_t L = 5000;
+            fitAcc = 0.0;
+            lahcIdx = 0;
+            lahcHist.assign(L, 0.0);
+        }
+
         cerr << "[phase " << phase << "] start  initT=" << initT
              << " decT=" << decT << " decTW=" << decTW << " tLim=" << tLim
              << "  budget=" << timeLimitSec << "s"
@@ -1540,6 +1732,11 @@ public:
                 {
                     auto it = occupied.find(newPos);
                     if (it != occupied.end() && it->second != v) {
+                        // Occupied: optionally turn the otherwise-wasted
+                        // proposal into a coupled swap with the occupant.
+                        if (swapMove)
+                            attemptSwap(v, it->second, phase, currentTemp, plan);
+                        moves++;
                         currentTemp *= decT; continue;
                     }
                 }
@@ -1603,12 +1800,7 @@ public:
                     }
                 }
 
-                bool acc = false;
-                if (dE <= 0.0) acc = true;
-                else {
-                    double prob = exp(-dE / max(1e-9, currentTemp));
-                    acc = uniform_real_distribution<double>(0.0, 1.0)(rng) < prob;
-                }
+                bool acc = acceptByRule(dE, currentTemp);
 
                 if (acc) {
                     commitMove(plan);
@@ -1718,6 +1910,9 @@ int main(int argc, char** argv) {
     int    reheatArg = 0;     // phase-2 stagnation reheat, waves (0 = off)
     int    polishArg = 0;     // final deterministic k-repair polish (0 = off)
     string fitArg    = "k";   // phase-2 fitness: k (paper dual) | sq (xc^2)
+    string placeArg  = "gauss"; // proposal: gauss | cong (congestion-aware)
+    string acceptArg = "metropolis"; // metropolis | threshold | lahc
+    int    swapArg   = 0;     // 1 = enable coupled swap move on occupied hits
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -1740,6 +1935,9 @@ int main(int argc, char** argv) {
         else if (a == "--reheat")            reheatArg  = atoi(need("--reheat"));
         else if (a == "--polish")            polishArg  = atoi(need("--polish"));
         else if (a == "--fit")               fitArg     = need("--fit");
+        else if (a == "--place")             placeArg   = need("--place");
+        else if (a == "--accept")            acceptArg  = need("--accept");
+        else if (a == "--swap")              swapArg    = atoi(need("--swap"));
         else if (a == "--status-file")       statusFile = need("--status-file");
         else if (a == "--status-id")         statusId   = need("--status-id");
         else if (a == "--status-interval")   statusInterval = atof(need("--status-interval"));
@@ -1769,6 +1967,10 @@ int main(int argc, char** argv) {
     solver.lexK           = (lexkArg != 0);
     solver.kRepair        = (krepairArg != 0);
     solver.reheatWaves    = reheatArg;
+    solver.placeMode      = (placeArg == "cong") ? 1 : 0;
+    solver.acceptMode     = (acceptArg == "threshold") ? 1
+                          : (acceptArg == "lahc")      ? 2 : 0;
+    solver.swapMove       = (swapArg != 0);
     solver.fitSq          = (fitArg == "sq");
     solver.fitSq2         = (fitArg == "sq2");
     solver.initMode       = initMode;
