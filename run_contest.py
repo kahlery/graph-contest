@@ -34,6 +34,14 @@ DATA_DIR  = ROOT / "data" / "live-2025-contest" / "live-contest"
 # Extra benchmark suite (https://github.com/YouSafe/gda-testing) for
 # generalization checks beyond the 9 official contest graphs.
 GDA_DIR   = ROOT / "data" / "gda-testing" / "graphs"
+# Extra named benchmark suites added 2026-06-14. Reference them in --graphs with
+# tokens like "final1", "final1-10", "challenge5" (ranges allowed). Resolved to
+# <dir>/<prefix><N>.json; the token itself is used as the short graph name.
+NAMED_SUITES = {
+    "final":     ROOT / "data" / "final_graphs",
+    "challenge": ROOT / "data" / "intermediate_benchmark_PC",
+}
+_NAMED_RE = re.compile(r"^(final|challenge)(\d+)(?:-(\d+))?$")
 SAKGD     = ROOT / "sakgd"
 APPROACH1 = ROOT / "approach1"
 STRESS_INIT = ROOT / "tools" / "stress_init.py"
@@ -107,6 +115,13 @@ def parse_graph_spec(spec):
             part = part.strip()
             if not part:
                 continue
+            nm = _NAMED_RE.match(part)
+            if nm:
+                prefix = nm.group(1)
+                a = int(nm.group(2))
+                b = int(nm.group(3)) if nm.group(3) else a
+                extra.extend(f"{prefix}{i}" for i in range(a, b + 1))
+                continue
             if "-" in part:
                 a, b = part.split("-", 1)
                 nums.update(range(int(a), int(b) + 1))
@@ -118,6 +133,9 @@ def parse_graph_spec(spec):
 def graph_path(idx):
     if isinstance(idx, int):
         return DATA_DIR / f"Automatic-{idx}.json"
+    nm = _NAMED_RE.match(idx)
+    if nm:
+        return NAMED_SUITES[nm.group(1)] / f"{idx}.json"
     p = Path(idx)
     return p if p.is_absolute() else GDA_DIR / p
 
@@ -125,6 +143,8 @@ def graph_path(idx):
 def graph_name(idx, path):
     if isinstance(idx, int):
         return path.stem
+    if _NAMED_RE.match(idx):
+        return idx
     return idx.replace("/", "__").rsplit(".json", 1)[0]
 
 
