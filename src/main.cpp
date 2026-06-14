@@ -1997,10 +1997,27 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // Snapshot helper: derive a sibling path by replacing the .json suffix.
+    auto snapPath = [&](const string& suffix) -> string {
+        const string ext = ".json";
+        if (outputFile.size() > ext.size() &&
+            outputFile.compare(outputFile.size() - ext.size(), ext.size(), ext) == 0)
+            return outputFile.substr(0, outputFile.size() - ext.size()) + suffix + ext;
+        return outputFile + suffix + ext;
+    };
+
+    // Snapshot 0: layout after init/repair, before any SA.
+    if (!outputFile.empty())
+        writeGraph(snapPath("_snap0_initial"), g, solver.pos);
+
     // Paper parameters (Table 1):
     //   min cross : initT=50  decT=0.999  decTW=0.99  tLim=0.01
     //   min k     : initT=1   decT=0.9999 decTW=0.99  tLim=0.01
     solver.runSA(/*phase*/1, p1T0,  0.999, 0.99, 0.01, phase1Min * 60.0);
+
+    // Snapshot 1: best layout after phase 1 (minimised total crossings).
+    if (!outputFile.empty())
+        writeGraph(snapPath("_snap1_phase1"), g, solver.bestPos);
 
     double remaining = max(0.0, (totalMin - phase1Min) * 60.0);
     // Final-polish budget is carved out of phase 2 so -t stays honest.
