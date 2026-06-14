@@ -55,6 +55,8 @@ METHOD_COLORS = {
     "sa-stress-lahc":         "#8338ec",
     "sa-stress-thr":          "#3a86ff",
     "sa-hilbert":             "#2a9d8f",
+    "sa-stress-bary":         "#ff6d00",
+    "sa-bary":                "#c9184a",
     "sa-cong":                "#bc6c25",
     "sa-swap":                "#9d0208",
     "staged":                 "#7209b7",
@@ -411,6 +413,9 @@ METHODS = [
     {"id": "sa-stress-lahc",       "label": "SA (stress+LAHC)",   "kband": 2,  "stages": _stages_sa_stress_extra("--accept", "lahc")},
     {"id": "sa-stress-thr",        "label": "SA (stress+thresh)", "kband": 2,  "stages": _stages_sa_stress_extra("--accept", "threshold")},
     {"id": "sa-hilbert",           "label": "SA (hilbert init)",  "kband": 2,  "stages": _stages_sa_extra("--init", "hilbert")},
+    # 2026-06-14 research-driven: barycenter-pull proposal (force-directed move in SA loop)
+    {"id": "sa-stress-bary",       "label": "SA (stress+bary)",   "kband": 2,  "stages": _stages_sa_stress_extra("--place", "bary")},
+    {"id": "sa-bary",              "label": "SA (bary)",          "kband": 2,  "stages": _stages_sa_extra("--place", "bary")},
     # dense-A6 variants on plain init (stress hurts A6):
     {"id": "sa-cong",              "label": "SA (cong)",          "kband": 2,  "stages": _stages_sa_extra("--place", "cong")},
     {"id": "sa-swap",              "label": "SA (swap)",          "kband": 2,  "stages": _stages_sa_extra("--swap", "1")},

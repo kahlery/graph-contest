@@ -625,6 +625,9 @@ public:
     int            placeMode = 0;   // 0 = plain Gaussian proposal,
                                     // 1 = congestion-aware (pick emptiest of
                                     // C Gaussian candidates by edge-grid cell)
+                                    // 2 = barycenter-pull (bias toward neighbour
+                                    // centroid + Gaussian jitter; force-directed
+                                    // proposal inside the SA acceptance loop)
     int            acceptMode = 0;  // 0 = Metropolis, 1 = threshold-accepting,
                                     // 2 = late-acceptance hill climbing (LAHC)
     bool           swapMove = false; // when a proposal lands on an occupied
@@ -1366,6 +1369,39 @@ public:
             return {nx, ny};
         }
 
+        // Barycenter-pull proposal: bias the move toward the centroid of v's
+        // graph neighbours, then add Gaussian jitter. This folds a force-
+        // directed step into the SA proposal — bottleneck vertices drift toward
+        // where their incident edges "want" them (shorter edges => fewer
+        // crossings) while SA acceptance still gates worsening moves. Falls back
+        // to plain Gaussian when v has no neighbours.
+        if (placeMode == 2) {
+            const auto& inc = nodeEdges[v];
+            if (!inc.empty()) {
+                double sx = 0, sy = 0;
+                for (int e : inc) {
+                    int other = (edges[e].u == v ? edges[e].v : edges[e].u);
+                    sx += pos[other].x; sy += pos[other].y;
+                }
+                double cx = sx / (double)inc.size();
+                double cy = sy / (double)inc.size();
+                const double alpha = 0.5; // pull fraction toward centroid
+                double tx = pos[v].x + alpha * (cx - pos[v].x);
+                double ty = pos[v].y + alpha * (cy - pos[v].y);
+                ll bnx = (ll)llround(tx + nd(rng));
+                ll bny = (ll)llround(ty + nd(rng));
+                if (bnx < ox) bnx = ox; if (bnx > ox + W) bnx = ox + W;
+                if (bny < oy) bny = oy; if (bny > oy + H) bny = oy + H;
+                if (bnx == pos[v].x && bny == pos[v].y) {
+                    bnx += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
+                    bny += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
+                    if (bnx < ox) bnx = ox; if (bnx > ox + W) bnx = ox + W;
+                    if (bny < oy) bny = oy; if (bny > oy + H) bny = oy + H;
+                }
+                return {bnx, bny};
+            }
+        }
+
         ll dx = (ll)llround(nd(rng));
         ll dy = (ll)llround(nd(rng));
         ll nx = pos[v].x + dx;
@@ -1910,7 +1946,7 @@ int main(int argc, char** argv) {
     int    reheatArg = 0;     // phase-2 stagnation reheat, waves (0 = off)
     int    polishArg = 0;     // final deterministic k-repair polish (0 = off)
     string fitArg    = "k";   // phase-2 fitness: k (paper dual) | sq (xc^2)
-    string placeArg  = "gauss"; // proposal: gauss | cong (congestion-aware)
+    string placeArg  = "gauss"; // proposal: gauss | cong (congestion-aware) | bary (barycenter-pull)
     string acceptArg = "metropolis"; // metropolis | threshold | lahc
     int    swapArg   = 0;     // 1 = enable coupled swap move on occupied hits
 
@@ -1967,7 +2003,7 @@ int main(int argc, char** argv) {
     solver.lexK           = (lexkArg != 0);
     solver.kRepair        = (krepairArg != 0);
     solver.reheatWaves    = reheatArg;
-    solver.placeMode      = (placeArg == "cong") ? 1 : 0;
+    solver.placeMode      = (placeArg == "cong") ? 1 : (placeArg == "bary") ? 2 : 0;
     solver.acceptMode     = (acceptArg == "threshold") ? 1
                           : (acceptArg == "lahc")      ? 2 : 0;
     solver.swapMove       = (swapArg != 0);
