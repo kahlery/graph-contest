@@ -417,6 +417,12 @@ def _stages_sa_stress_extra(*flags):
              "extra": list(flags)}]
 def _stages_sa_extra(*flags):
     return [{"bin": "sakgd", "frac": "full", "extra": list(flags)}]
+# Warm continuation: a single sakgd stage forced to --init input so a warm-start
+# layout (passed as the solver input) is actually used instead of being discarded
+# by the --init auto gate. Used by the adaptive orchestrator (orchestrate.py) to
+# resume a graph from its best-so-far layout without re-paying any init stage.
+def _stages_sa_warm():
+    return [{"bin": "sakgd", "frac": "full", "initmode": "input"}]
 def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
 def _stages_staged(lns_mode):
     return [{"bin": "approach1", "mode": lns_mode, "tag": "lns", "frac": "lns"},
@@ -424,6 +430,7 @@ def _stages_staged(lns_mode):
 
 METHODS = [
     {"id": "sa",                   "label": "SA",                 "kband": 2,  "stages": _stages_sa()},
+    {"id": "sa-warm",              "label": "SA (warm cont.)",    "kband": 2,  "stages": _stages_sa_warm()},
     {"id": "sa-stress",            "label": "SA (stress init)",   "kband": 2,  "stages": _stages_sa_stress()},
     {"id": "sa-stress-sq2",        "label": "SA (stress+sq2)",    "kband": 2,  "stages": _stages_sa_stress_sq2()},
     {"id": "sa-stress-pro",        "label": "SA (stress+polish)", "kband": 2,  "stages": _stages_sa_stress_pro()},
