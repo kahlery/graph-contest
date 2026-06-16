@@ -47,31 +47,15 @@ def load_graph(path):
     return data, ids, earr, W, H, x0, y0
 
 
-# Logical engine name -> (graphviz binary, extra graph args). "sfdp-spread"
-# adds overlap removal + larger node separation/ideal edge length so the
-# layout spreads more uniformly across the canvas. After snap_to_grid
-# rescales the bounding box to fill WxH, a more uniform distribution means
-# lower local density -> fewer crossings on a DENSE graph (Automatic-6),
-# where plain force-directed clustering is punished.
-SPREAD_ARGS = ["-Goverlap=prism", "-Gsep=+12", "-GK=2.0"]
-ENGINE_MAP = {
-    "sfdp":        ("sfdp",  []),
-    "sfdp-spread": ("sfdp",  SPREAD_ARGS),
-    "neato":       ("neato", []),
-    "fdp":         ("fdp",   []),
-}
-
-
 def run_graphviz(engine, n, edges, seed, timeout):
     """Run a graphviz engine, return float coords array [n,2] or None."""
-    binary, gv_extra = ENGINE_MAP.get(engine, (engine, []))
     lines = ["graph G {", 'node [shape=point];']
     lines.extend(f"{i};" for i in range(n))
     lines.extend(f"{a}--{b};" for a, b in edges)
     lines.append("}")
     dot = "\n".join(lines)
-    cmd = [binary, "-Tplain", f"-Gstart={seed}"] + gv_extra
-    if binary == "neato" and n > 1000:
+    cmd = [engine, "-Tplain", f"-Gstart={seed}"]
+    if engine == "neato" and n > 1000:
         # subset model: sparse stress terms, scales past a few thousand nodes
         cmd.append("-Gmodel=subset")
     try:
@@ -171,36 +155,6 @@ def sampled_avg_crossings(coords, edges_np, rng, samples=200000):
     return 2.0 * est_total / m
 
 
-def exact_avg_crossings(coords, edges_np):
-    """EXACT average crossings per edge (full pairwise, chunked over the
-    first edge). The sampled estimate above is noisy on dense graphs
-    (Automatic-6: ~4.5M edge pairs) and can pick a worse candidate layout;
-    an exact count over all pairs removes that selection noise. Cheap for
-    small m (O(m^2) but vectorised over the second edge, <1s at m=3000)."""
-    m = len(edges_np)
-    if m < 2:
-        return 0.0
-    coords = coords.astype(np.float64)
-    P1 = coords[edges_np[:, 0]]
-    P2 = coords[edges_np[:, 1]]
-    e0, e1 = edges_np[:, 0], edges_np[:, 1]
-    total = 0
-    for i in range(m - 1):
-        j = i + 1
-        a1, a2 = P1[i], P2[i]
-        q1, q2 = P1[j:], P2[j:]
-        share = ((e0[j:] == e0[i]) | (e0[j:] == e1[i]) |
-                 (e1[j:] == e0[i]) | (e1[j:] == e1[i]))
-        # orientation tests (strict crossing == both straddle)
-        d1 = (a2[0] - a1[0]) * (q1[:, 1] - a1[1]) - (a2[1] - a1[1]) * (q1[:, 0] - a1[0])
-        d2 = (a2[0] - a1[0]) * (q2[:, 1] - a1[1]) - (a2[1] - a1[1]) * (q2[:, 0] - a1[0])
-        d3 = (q2[:, 0] - q1[:, 0]) * (a1[1] - q1[:, 1]) - (q2[:, 1] - q1[:, 1]) * (a1[0] - q1[:, 0])
-        d4 = (q2[:, 0] - q1[:, 0]) * (a2[1] - q1[:, 1]) - (q2[:, 1] - q1[:, 1]) * (a2[0] - q1[:, 0])
-        inter = (d1 * d2 < 0) & (d3 * d4 < 0) & (~share)
-        total += int(inter.sum())
-    return 2.0 * total / m
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-i", "--input", required=True)
@@ -209,12 +163,8 @@ def main():
     ap.add_argument("-t", "--time-budget", type=float, default=60.0,
                     help="seconds for repeated layout attempts")
     ap.add_argument("--engine", default="auto",
-                    choices=["auto", "neato", "sfdp", "both",
-                             "sfdp-spread", "fdp", "all"])
+                    choices=["auto", "neato", "sfdp", "both"])
     ap.add_argument("--max-attempts", type=int, default=8)
-    ap.add_argument("--exact", type=int, default=0,
-                    help="1 = select candidate by EXACT crossing count "
-                         "(removes sampling noise; use on small/dense graphs)")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -230,8 +180,6 @@ def main():
         engines = ["sfdp"] if n > 3000 else ["sfdp", "neato"]
     elif args.engine == "both":
         engines = ["neato", "sfdp"]
-    elif args.engine == "all":
-        engines = ["sfdp", "neato", "fdp"]
     else:
         engines = [args.engine]
 
@@ -262,11 +210,9 @@ def main():
             print(f"[stress-init] attempt {attempt} {engine}: {e}",
                   file=sys.stderr)
             continue
-        score = (exact_avg_crossings(coords, edges_np) if args.exact
-                 else sampled_avg_crossings(coords, edges_np, rng_np))
+        score = sampled_avg_crossings(coords, edges_np, rng_np)
         print(f"[stress-init] attempt {attempt} {engine}: "
-              f"{'exact' if args.exact else 'est'} avg crossings/edge = "
-              f"{score:.2f}", file=sys.stderr)
+              f"est avg crossings/edge = {score:.2f}", file=sys.stderr)
         if score < best_score:
             best_coords, best_score, best_tag = coords, score, engine
 

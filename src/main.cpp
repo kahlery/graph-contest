@@ -1402,44 +1402,6 @@ public:
             }
         }
 
-        // Worst-edge shortening proposal: pull v toward the far endpoint of
-        // its LONGEST incident edge, then add temperature-scaled jitter. Long
-        // edges sweep more of the canvas and tend to accumulate the most
-        // crossings, so shortening the current worst one directly attacks the
-        // bottleneck — distinct from the centroid pull (bary, placeMode 2) and
-        // the empty-cell pick (cong, placeMode 1). Falls back to plain Gaussian
-        // when v has no neighbours.
-        if (placeMode == 3) {
-            const auto& inc = nodeEdges[v];
-            if (!inc.empty()) {
-                ll bx = pos[v].x, by = pos[v].y;
-                long long bestLen2 = -1;
-                for (int e : inc) {
-                    int other = (edges[e].u == v ? edges[e].v : edges[e].u);
-                    long long ddx = pos[other].x - pos[v].x;
-                    long long ddy = pos[other].y - pos[v].y;
-                    long long len2 = ddx * ddx + ddy * ddy;
-                    if (len2 > bestLen2) {
-                        bestLen2 = len2; bx = pos[other].x; by = pos[other].y;
-                    }
-                }
-                const double alpha = 0.5; // pull fraction toward far endpoint
-                double tx = pos[v].x + alpha * (double)(bx - pos[v].x);
-                double ty = pos[v].y + alpha * (double)(by - pos[v].y);
-                ll nx = (ll)llround(tx + nd(rng));
-                ll ny = (ll)llround(ty + nd(rng));
-                if (nx < ox) nx = ox; if (nx > ox + W) nx = ox + W;
-                if (ny < oy) ny = oy; if (ny > oy + H) ny = oy + H;
-                if (nx == pos[v].x && ny == pos[v].y) {
-                    nx += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
-                    ny += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
-                    if (nx < ox) nx = ox; if (nx > ox + W) nx = ox + W;
-                    if (ny < oy) ny = oy; if (ny > oy + H) ny = oy + H;
-                }
-                return {nx, ny};
-            }
-        }
-
         ll dx = (ll)llround(nd(rng));
         ll dy = (ll)llround(nd(rng));
         ll nx = pos[v].x + dx;
@@ -2041,8 +2003,7 @@ int main(int argc, char** argv) {
     solver.lexK           = (lexkArg != 0);
     solver.kRepair        = (krepairArg != 0);
     solver.reheatWaves    = reheatArg;
-    solver.placeMode      = (placeArg == "cong") ? 1 : (placeArg == "bary") ? 2
-                          : (placeArg == "uncross") ? 3 : 0;
+    solver.placeMode      = (placeArg == "cong") ? 1 : (placeArg == "bary") ? 2 : 0;
     solver.acceptMode     = (acceptArg == "threshold") ? 1
                           : (acceptArg == "lahc")      ? 2 : 0;
     solver.swapMove       = (swapArg != 0);
