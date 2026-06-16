@@ -62,6 +62,9 @@ METHOD_COLORS = {
     "sa-stress-swap":         "#d62828",
     "sa-stress-lahc":         "#8338ec",
     "sa-stress-thr":          "#3a86ff",
+    "sa-stress-spread":       "#52b788",
+    "sa-stress-exact":        "#f4a261",
+    "sa-stress-uncross":      "#9b5de5",
     "sa-hilbert":             "#2a9d8f",
     "sa-stress-bary":         "#ff6d00",
     "sa-bary":                "#c9184a",
@@ -415,6 +418,15 @@ def _stages_sa_stress_extra(*flags):
     return [{"bin": "stress", "tag": "init", "frac": "init"},
             {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
              "extra": list(flags)}]
+# 2026-06-16 A6-targeted init-stage variants. The extra flags go to the STRESS
+# stage (stress_init.py), and the SA stage is forced to --init input so the
+# improved stress layout is actually used (auto would otherwise re-pick a
+# BFS-snake/Hilbert layout and the init change would be invisible).
+def _stages_sa_stress_init_extra(*init_flags):
+    return [{"bin": "stress", "tag": "init", "frac": "init",
+             "extra": list(init_flags)},
+            {"bin": "sakgd", "tag": "sa", "frac": "rest", "warm": True,
+             "initmode": "input"}]
 def _stages_sa_extra(*flags):
     return [{"bin": "sakgd", "frac": "full", "extra": list(flags)}]
 def _stages_ils():  return [{"bin": "approach1", "mode": "ils", "frac": "full"}]
@@ -433,6 +445,13 @@ METHODS = [
     {"id": "sa-stress-lahc",       "label": "SA (stress+LAHC)",   "kband": 2,  "stages": _stages_sa_stress_extra("--accept", "lahc")},
     {"id": "sa-stress-thr",        "label": "SA (stress+thresh)", "kband": 2,  "stages": _stages_sa_stress_extra("--accept", "threshold")},
     {"id": "sa-hilbert",           "label": "SA (hilbert init)",  "kband": 2,  "stages": _stages_sa_extra("--init", "hilbert")},
+    # 2026-06-16 A6-targeted candidates (stress base; screened then kept/deleted):
+    #   spread  = sfdp overlap-removal + larger separation (less clustering on dense A6)
+    #   exact   = candidate init chosen by EXACT crossing count + sfdp/neato/fdp
+    #   uncross = SA proposal pulls v toward far end of its longest incident edge
+    {"id": "sa-stress-spread",     "label": "SA (stress+spread)", "kband": 2,  "stages": _stages_sa_stress_init_extra("--engine", "sfdp-spread")},
+    {"id": "sa-stress-exact",      "label": "SA (stress+exact)",  "kband": 2,  "stages": _stages_sa_stress_init_extra("--exact", "1", "--engine", "all")},
+    {"id": "sa-stress-uncross",    "label": "SA (stress+uncross)","kband": 2,  "stages": _stages_sa_stress_extra("--place", "uncross")},
     # 2026-06-14 research-driven: barycenter-pull proposal (force-directed move in SA loop)
     {"id": "sa-stress-bary",       "label": "SA (stress+bary)",   "kband": 2,  "stages": _stages_sa_stress_extra("--place", "bary")},
     {"id": "sa-bary",              "label": "SA (bary)",          "kband": 2,  "stages": _stages_sa_extra("--place", "bary")},
@@ -512,6 +531,7 @@ def run_method(spec, gpath, total_min, p1_frac, seed, out_dir, suffix,
             cmd = [sys.executable, str(STRESS_INIT), "-i", str(inp),
                    "-o", str(out), "-s", str(seed),
                    "-t", str(round(stage_min * 60.0, 1))]
+            cmd += st.get("extra", [])
         else:
             binpath  = SAKGD if st["bin"] == "sakgd" else APPROACH1
             cmd = [str(binpath), "-i", str(inp), "-o", str(out),
