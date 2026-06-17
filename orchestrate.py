@@ -72,13 +72,20 @@ LEASE_FLOOR  = 15.0          # do not launch a lease with less than this much bu
 # current quantum (the previous warm layout is retained) -- a safety net, not the
 # normal path. _LEASE_TIMEOUT is set before each lease.
 # --------------------------------------------------------------------------- #
-_LEASE_TIMEOUT = [None]
+_LEASE_TIMEOUT = [None]      # per-lease soft backstop (seconds), set before each lease
+_HARD_DEADLINE = [None]      # absolute monotonic time no solver subprocess may run past
 _orig_run = rc._run
 
 
 def _run_with_backstop(cmd, log_path):
     t0 = time.time()
     to = _LEASE_TIMEOUT[0]
+    # Clamp to the hard deadline so NO subprocess (any stage) runs past budget, even
+    # a cold multi-stage lease launched in the tail: the 60s floor below is decoupled
+    # from q=min(q,rem), so without this a ~15s-budget lease could hard-run 60-120s.
+    if _HARD_DEADLINE[0] is not None:
+        left = _HARD_DEADLINE[0] - time.monotonic()
+        to = max(1.0, min(to if to else left, left))
     with open(log_path, "w") as log:
         try:
             proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, timeout=to)
@@ -235,10 +242,17 @@ class Orchestrator:
         return G
 
     # --- budget accounting -------------------------------------------------- #
+    def _verify_reserve(self):
+        """Wall held back for the end-of-run verify_output of every banked best
+        (each spawns sakgd --verify; cost grows with n)."""
+        return sum(8.0 + g["n"] / 2000.0 for g in self.G.values())
+
     def reserve(self):
-        """Time held back for end-of-run verifies + observed solver overrun."""
-        per_verify = sum(8.0 + g["n"] / 2000.0 for g in self.G.values())   # ~n-scaled
-        return max(30.0, 0.03 * self.budget) + per_verify + self.max_overrun
+        """Time held back for end-of-run verifies + observed solver overrun, CAPPED to
+        a fraction of the budget so a small budget still leaves room to explore every
+        graph (binds only when the budget is tiny; ~5% and irrelevant at 3600s)."""
+        full = max(30.0, 0.03 * self.budget) + self._verify_reserve()
+        return min(full, 0.30 * self.budget) + self.max_overrun
 
     def remaining(self):
         return self.deadline - self.now() - self.reserve()
@@ -331,6 +345,10 @@ class Orchestrator:
     def run(self):
         self.t0 = time.monotonic()
         self.deadline = self.budget          # now()/remaining() work in seconds-since-start
+        # Absolute ceiling for solver subprocesses: leave the verify reserve so the
+        # end-of-run verifies still fit inside the budget. Backstop clamps to this.
+        _HARD_DEADLINE[0] = self.t0 + self.budget - min(self._verify_reserve(),
+                                                        0.20 * self.budget)
         try:
             self._explore()
             self._greedy()
@@ -442,9 +460,12 @@ class Orchestrator:
         for nm, g in self.G.items():
             sub_path = None
             verified = None
-            if g["warm"] and Path(g["warm"]).exists():
+            # Submit the best layout; for a graph that never got an improving lease
+            # fall back to its (valid) original input so EVERY graph has a submission.
+            src = g["warm"] if (g["warm"] and Path(g["warm"]).exists()) else g["path"]
+            if src and Path(src).exists():
                 sub_path = sub_dir / f"{nm}.json"
-                shutil.copy2(g["warm"], sub_path)
+                shutil.copy2(src, sub_path)
                 verified = verify_output(sub_path)
             summary[nm] = dict(
                 k=g["best_k"], totalX=g["best_x"], seconds=round(g["spent"], 1),
