@@ -230,7 +230,17 @@ class Orchestrator:
                 continue
             method, flags = classify(n, m, self.no_graphviz)
             nm = graph_name(tok, p)
-            v = verify_output(p) if m else {"k": 0, "valid": True}
+            # Baseline-k probe. SKIP it for large graphs: verify_output runs
+            # `sakgd --verify` (forced --init input) which does computeAllCrossings on
+            # the RAW input -- on a tangled huge graph (A8: ~45M crossings) that is
+            # MINUTES and would hang startup before the budget clock even starts. The
+            # first lease establishes the real k instead.
+            if not m:
+                v = {"k": 0, "valid": True}
+            elif n >= 5000:
+                v = None
+            else:
+                v = verify_output(p)
             done = bool(flags.get("trivial")) or bool(v and v.get("k") == 0)
             G[nm] = dict(tok=tok, path=str(p), n=n, m=m, method0=method,
                          dense=flags.get("dense", False), big=flags.get("big", False),
@@ -462,11 +472,16 @@ class Orchestrator:
             verified = None
             # Submit the best layout; for a graph that never got an improving lease
             # fall back to its (valid) original input so EVERY graph has a submission.
-            src = g["warm"] if (g["warm"] and Path(g["warm"]).exists()) else g["path"]
+            warm_ok = bool(g["warm"] and Path(g["warm"]).exists())
+            src = g["warm"] if warm_ok else g["path"]
             if src and Path(src).exists():
                 sub_path = sub_dir / f"{nm}.json"
                 shutil.copy2(src, sub_path)
-                verified = verify_output(sub_path)
+                # A solved warm layout verifies fast at any size; a raw-input
+                # fallback on a huge graph would re-pay computeAllCrossings (~min)
+                # -> skip that verify and trust the m==0/size signal.
+                if warm_ok or g["n"] < 5000:
+                    verified = verify_output(sub_path)
             summary[nm] = dict(
                 k=g["best_k"], totalX=g["best_x"], seconds=round(g["spent"], 1),
                 leases=g["leases"], converged=g["done"],
