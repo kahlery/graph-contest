@@ -58,8 +58,9 @@ BIG_FLOOR    = 180.0         # minimum quantum for a huge graph (amortise setup)
 MIN_LEASES   = 2             # never declare convergence on a single noisy lease
 STALL_FLOOR  = 150.0         # min trailing window (s) for the plateau test
 BID_WIN      = 90.0          # trailing window (s) used to estimate dk/dt for bidding
-DENSE_MULT   = 1.3           # bid multiplier for dense/never-converge graphs
 REL_X_EPS    = 0.005         # <0.5% total-crossings drop over the window == flat
+DENSE_DENS   = 8.0           # default m/n above which the COLD init prefers plain sa
+BIG_N        = 8000          # default node count above which a graph gets BIG setup care
 BID_EPS      = 1e-4          # below this k/s, treat as no real improvement
 STARVE_FACTOR = 2.0          # bidders within this factor of the top bid share fairly
 OVERRUN      = 1.6           # per-process timeout backstop = OVERRUN * requested
@@ -107,21 +108,22 @@ def _clamp(x, lo, hi):
 # --------------------------------------------------------------------------- #
 # Pure helpers (unit-tested in --self-test; no solver, no machine-load noise).
 # --------------------------------------------------------------------------- #
-def classify(n, m, no_graphviz=False):
-    """Pick a starting method + flags from (n, m). Findings: dense (m/n>=8, A6)
-    -> plain SA (stress hurts dense); huge (n>=8000, A8) and sparse (m/n<2.5,
-    A7/A9) -> stress init. Trivial (m==0) -> nothing to solve."""
+def classify(n, m, no_graphviz=False, dense_dens=DENSE_DENS, big_n=BIG_N):
+    """Pick the COLD-lease method + a (dense/big) label from (n, m). Encodes the
+    GENERAL prior (force-directed init helps SPARSE graphs, hurts DENSE ones; huge
+    graphs need setup care), with SOFT, CLI-overridable thresholds. This biases only
+    the first (cold) lease's init -- every continuation is warm 'sa-warm' regardless,
+    and the measure-and-reallocate loop self-corrects -- so a misclassified new graph
+    costs at most one suboptimal explore lease. The labels do NOT exempt any graph
+    from convergence or weight its bid: scheduling is purely measurement-driven."""
     if m == 0:
         return "sa", {"trivial": True}
     dens = m / max(1, n)
-    big = n >= 8000
-    if dens >= 8.0:
-        return "sa", {"dense": True, "big": big}          # never-converge, exempt
-    method = "sa-stress"
-    flags = {"big": True} if big else {}
-    if no_graphviz:
-        method = "sa"          # stress init needs graphviz; fall back to snake init
-    return method, flags
+    big = n >= big_n
+    if dens >= dense_dens:                       # dense: stress init empirically hurts
+        return "sa", {"dense": True, "big": big}
+    method = "sa" if no_graphviz else "sa-stress"   # stress init needs graphviz
+    return method, ({"big": True} if big else {})
 
 
 def slope(cum, win):
@@ -146,10 +148,11 @@ def slope(cum, win):
 
 
 def is_converged(g, q, stall_floor):
-    """True iff graph g has plateaued (drop it, bank its budget). Dense graphs are
-    exempt (empirically never converge). Guards against empty / setup-only traces."""
-    if g.get("dense"):
-        return False
+    """True iff graph g has plateaued (drop it, bank its budget) -- decided PURELY
+    from the measured trace, for EVERY graph (no graph-class exemption). A graph
+    still improving (dk>0, or totalX falling >0.5%) is never converged, so a slow-
+    but-steady improver (A6-like) survives on its own measured slope. Guards against
+    empty / setup-only traces."""
     if g["leases"] < MIN_LEASES:
         return False
     cum = g["cum"]
@@ -166,12 +169,11 @@ def is_converged(g, q, stall_floor):
 
 
 def bid(g, q):
-    """Expected next-quantum k-reduction = recent dk/dt * q, with a tiny dx tie-break
-    so a 'k-flat but totalX-still-falling' graph (A6) keeps bidding. Dense gets a
-    persistence multiplier (its descent extrapolates past the window)."""
+    """Expected next-quantum k-reduction = recent dk/dt * q (PURELY measured), with a
+    tiny totalX tie-break so a 'k-flat but totalX-still-falling' graph keeps bidding.
+    No graph-class multiplier -- a dense graph competes on its measured slope alone."""
     dk, dx, _ = slope(g["cum"], min(q, BID_WIN))
-    s = dk * q + 1e-6 * dx * q
-    return s * (DENSE_MULT if g.get("dense") else 1.0)
+    return dk * q + 1e-6 * dx * q
 
 
 def quantum_base(budget, n_live, override=None):
@@ -190,12 +192,14 @@ def quantum_for(g, qb):
 class Orchestrator:
     def __init__(self, graphs_spec, budget, workers, out_dir, seed=1,
                  quantum_override=None, stall_floor=STALL_FLOOR, p1_cold=0.2,
-                 p1_warm=0.05, verbose=True):
+                 p1_warm=0.05, dense_dens=DENSE_DENS, big_n=BIG_N, verbose=True):
         self.budget = float(budget)
         self.W = int(workers)
         self.seed = int(seed)
         self.q_override = quantum_override
         self.stall_floor = float(stall_floor)
+        self.dense_dens = float(dense_dens)
+        self.big_n = int(big_n)
         self.p1_cold = p1_cold
         self.p1_warm = p1_warm
         self.verbose = verbose
@@ -228,7 +232,8 @@ class Orchestrator:
             except Exception as e:                    # unreadable/huge JSON: skip
                 print(f"[orch] WARN skipping {tok}: {e}", file=sys.stderr)
                 continue
-            method, flags = classify(n, m, self.no_graphviz)
+            method, flags = classify(n, m, self.no_graphviz,
+                                     dense_dens=self.dense_dens, big_n=self.big_n)
             nm = graph_name(tok, p)
             # Baseline-k probe. SKIP it for large graphs: verify_output runs
             # `sakgd --verify` (forced --init input) which does computeAllCrossings on
@@ -530,12 +535,14 @@ def self_test():
         print(f"  [{'PASS' if cond else 'FAIL'}] {name}")
         ok = ok and cond
 
-    print("self-test: classify()")
+    print("self-test: classify() (soft, configurable cold-init prior)")
     check("dense A6 (200,3000) -> sa+dense", classify(200, 3000) == ("sa", {"dense": True, "big": False}))
     check("huge A8 (10466,20288) -> sa-stress+big", classify(10466, 20288) == ("sa-stress", {"big": True}))
     check("sparse A9 (2519,4938) -> sa-stress", classify(2519, 4938) == ("sa-stress", {}))
     check("trivial m=0 -> trivial", classify(10, 0) == ("sa", {"trivial": True}))
     check("no graphviz -> sa", classify(2519, 4938, no_graphviz=True)[0] == "sa")
+    check("dense threshold is configurable", classify(200, 3000, dense_dens=20.0)[0] == "sa-stress")
+    check("big threshold is configurable", classify(6000, 9000, big_n=5000)[1].get("big") is True)
 
     print("self-test: slope() guards + monotone descent")
     check("empty cum -> zeros", slope([], 100) == (0.0, 0.0, 1))
@@ -545,25 +552,28 @@ def self_test():
     dk2, _, _ = slope([[0, 9, 100], [10, 9, 100]], 100)
     check("flat k slope = 0", dk2 == 0.0)
 
-    print("self-test: is_converged()")
-    easy = dict(dense=False, leases=2, cum=[[0, 9, 100], [5, 9, 100], [10, 9, 100],
-                                            [15, 9, 100], [20, 9, 100], [25, 9, 100]])
-    check("flat easy graph (>=5 ticks, 2 leases) converges", is_converged(easy, 20, 25) is True)
+    print("self-test: is_converged() (measurement-driven, NO graph-class exemption)")
+    easy = dict(leases=2, cum=[[0, 9, 100], [5, 9, 100], [10, 9, 100],
+                               [15, 9, 100], [20, 9, 100], [25, 9, 100]])
+    check("flat graph (>=5 ticks, 2 leases) converges", is_converged(easy, 20, 25) is True)
     check("same graph, only 1 lease -> not converged",
           is_converged({**easy, "leases": 1}, 20, 25) is False)
-    a6 = dict(dense=True, leases=5, cum=[[t, 800 - t, 9000 - 5 * t] for t in range(0, 60, 5)])
-    check("dense graph never converges", is_converged(a6, 20, 25) is False)
-    setup = dict(dense=False, leases=2, cum=[[0, 50, 9999], [120, 50, 9999]])  # 2 ticks
+    impr = dict(leases=5, cum=[[t, 800 - t, 9000 - 5 * t] for t in range(0, 60, 5)])
+    check("still-improving graph (dk>0) not converged -- on MERIT not exemption",
+          is_converged(impr, 20, 25) is False)
+    flat_dense = dict(dense=True, leases=2, cum=[[t, 700, 5000] for t in range(0, 60, 10)])
+    check("a TRULY-flat graph converges even if labelled dense (no exemption)",
+          is_converged(flat_dense, 20, 25) is True)
+    setup = dict(leases=2, cum=[[0, 50, 9999], [120, 50, 9999]])  # 2 ticks
     check("setup-only trace (<5 ticks) not converged", is_converged(setup, 60, 150) is False)
-    check("empty cum not converged", is_converged(dict(dense=False, leases=2, cum=[]), 20, 25) is False)
+    check("empty cum not converged", is_converged(dict(leases=2, cum=[]), 20, 25) is False)
 
-    print("self-test: bid() + dense multiplier")
-    g_imp = dict(dense=False, cum=[[0, 20, 1000], [10, 10, 500]])
+    print("self-test: bid() (purely measured, no graph-class multiplier)")
+    g_imp = dict(cum=[[0, 20, 1000], [10, 10, 500]])
     g_den = dict(dense=True, cum=[[0, 20, 1000], [10, 10, 500]])
-    b1, b2 = bid(g_imp, 60), bid(g_den, 60)
-    check("improving graph has positive bid", b1 > 0)
-    check("dense multiplier raises bid 1.3x", abs(b2 - b1 * DENSE_MULT) < 1e-6)
-    check("flat graph bid ~ 0", bid(dict(dense=False, cum=[[0, 9, 100], [9, 9, 100]]), 60) < BID_EPS)
+    check("improving graph has positive bid", bid(g_imp, 60) > 0)
+    check("dense label does NOT change bid (pure slope)", bid(g_den, 60) == bid(g_imp, 60))
+    check("flat graph bid ~ 0", bid(dict(cum=[[0, 9, 100], [9, 9, 100]]), 60) < BID_EPS)
 
     print("self-test: quantum sizing")
     check("Qb clamped low->QMIN", quantum_base(160, 8) == QMIN)
@@ -596,6 +606,10 @@ def main():
                     help="override base quantum seconds (testing)")
     ap.add_argument("--stall-floor", type=float, default=STALL_FLOOR,
                     help="min plateau window seconds (lower for short tests)")
+    ap.add_argument("--dense-density", type=float, default=DENSE_DENS,
+                    help="m/n above which the cold init prefers plain sa (soft prior)")
+    ap.add_argument("--big-n", type=int, default=BIG_N,
+                    help="node count above which a graph gets BIG setup care (soft prior)")
     ap.add_argument("--self-test", action="store_true",
                     help="run the deterministic logic self-test and exit")
     args = ap.parse_args()
@@ -606,7 +620,8 @@ def main():
     ensure_binaries()
     orch = Orchestrator(args.graphs, args.budget, args.workers, args.out_dir,
                         seed=args.seed, quantum_override=args.quantum,
-                        stall_floor=args.stall_floor)
+                        stall_floor=args.stall_floor,
+                        dense_dens=args.dense_density, big_n=args.big_n)
     orch.run()
     return 0
 
