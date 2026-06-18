@@ -62,9 +62,27 @@ Per-process kill backstop floored at 60 s and applied per stage, decoupled from
 deadline-aware clamp on every subprocess timeout. Plus reserve cap + submission
 fallback for small-budget robustness.
 
+## Genericisation (2026-06-18) — remove overfit to the Automatic 1-9 set
+Audit question: is the scheduler generic or overfit to these 9 graphs? Finding: the
+*engine* (budget split, convergence from the live trace, dk/dt reallocation) was
+already measurement-driven and graph-agnostic — A6 won the budget because it
+*measured* as still-improving, not because the code knows "A6". Only a thin prior
+layer was tuned. Removed the two graph-class-specific scheduler rules:
+- **`dense` never-converge exemption** in `is_converged` → convergence is now decided
+  purely from the measured trace for EVERY graph (still-improving survives on dk>0 /
+  totalX-falling; a truly-flat graph drops regardless of label).
+- **1.3× dense bid multiplier** in `bid` → reallocation is purely measured dk/dt.
+`classify()` thresholds are now SOFT, CLI-overridable defaults (`--dense-density`,
+`--big-n`) that bias only the COLD-lease init + a summary label, never the scheduler.
+Proof it was redundant: with both knobs removed, a smoke run still gave A6 the most
+budget on its measured slope alone (1492→773, 3 leases). self-test updated → ALL PASS.
+Commit db527c0.
+
 ## Usage
 ```
 python3 orchestrate.py --graphs 1-9 --budget 3600 --workers 8         # the contest
+python3 orchestrate.py --graphs final1-10 --budget 3600 --workers 8   # any other dataset
+python3 orchestrate.py --graphs 1-9 --budget 3600 --workers 8 --dense-density 6 --big-n 5000
 python3 orchestrate.py --graphs '1,6,9' --budget 220 --workers 2 --quantum 20 --stall-floor 25
 python3 orchestrate.py --self-test
 ```
