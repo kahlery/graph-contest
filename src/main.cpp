@@ -1758,6 +1758,17 @@ public:
 
         writeStatus(startingTemp, moves, accepts, "running");
 
+        // Budget-fill reheat ceiling. A cooling-only schedule freezes when the
+        // wave temperature reaches tLim, which on many graphs happens long
+        // before the wall-clock budget is spent (e.g. a 10-min Automatic-8 run
+        // freezing after ~80s). Rather than idle away the remainder, once the
+        // schedule hits the floor we restore the incumbent and reheat to this
+        // ceiling, which decays toward a gentle floor so successive restarts
+        // anneal into a fine descent instead of the too-hot full-initT reheat
+        // that lost the earlier A/B. Best is preserved across reheats, so the
+        // result is always >= the cooling-only behaviour.
+        double reheatCeil = initT;
+        while (kVal > 0 && elapsed() < timeLimitSec) {
         while (kVal > 0 && startingTemp > tLim && elapsed() < timeLimitSec) {
             double currentTemp = startingTemp;
             while (kVal > 0 && currentTemp > tLim && elapsed() < timeLimitSec) {
@@ -1888,6 +1899,19 @@ public:
             // state already matches the best k and is within ~1% of its X.
             if (kVal != bestK || totalX > bestX + max<ll>(4, bestX / 100))
                 restoreBest();
+        }
+        // Wave schedule reached the temperature floor. If wall-clock budget is
+        // left, reheat from the best and run another (cooler) descent; the
+        // outer loop only exits when the time budget or k=0 is reached.
+        if (kVal > 0 && startingTemp <= tLim && elapsed() < timeLimitSec) {
+            restoreBest();
+            reheatCeil   = max(tLim * 8.0, reheatCeil * 0.5);
+            startingTemp = reheatCeil;
+            staleWaves   = 0;
+            cerr << "  [phase " << phase << "] budget-reheat sT=" << startingTemp
+                 << " at t=" << (int)elapsed() << "s bestK=" << bestK
+                 << " bestX=" << bestX << "\n";
+        }
         }
 
         writeStatus(startingTemp, moves, accepts, "phase-done");
