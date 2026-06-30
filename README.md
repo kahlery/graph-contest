@@ -222,6 +222,18 @@ python3 run_contest.py --methods sa-stress --graphs "8;circulant_graph/100_[1,2,
 | `ils`    | Iterated Local Search: full SA inner run → random kick (relocate `n/10` nodes) → repeat, keeping global best across rounds. Escapes local optima that SA and LNS both get stuck in. |
 | `lns`    | Pure LNS (`./approach1 --mode lns`). |
 
+**Cooperative worker sharing** (`--xchg-rounds R`, `--xchg-half`)
+
+By default the W workers are an independent portfolio. `--xchg-rounds R` (R>1)
+splits the budget into R rounds; after each round the lowest-k "elite" layout is
+shared and workers warm-start the next round from it. `--xchg-half` keeps the
+low-half worker ids independent (exploration) and lets the high-half adopt the
+elite (intensification) — *no-regret*: it captures sharing's gains on high-k
+graphs without losing the independent edge on low-k bottleneck graphs. See
+[results/exp-2026-06-30-reheat-sharing.md](results/exp-2026-06-30-reheat-sharing.md).
+Recommended for `sa-stress`: `--workers 6 --xchg-rounds 4 --xchg-half`
+(stagnation `--reheat` was tested and does **not** help — leave it off).
+
 **Output layout**
 
 ```

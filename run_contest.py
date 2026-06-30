@@ -582,7 +582,7 @@ def _elect_elite(out_dir, method, n_workers, r, elite):
 
 def run_combo(method, gpath, total_min, p1_frac, base_seed,
               out_dir, n_workers, nh_size, nh_cands, lns_frac, ils_perturb,
-              gpath_warm=None, xchg_rounds=1):
+              gpath_warm=None, xchg_rounds=1, half_share=False):
     """Run n_workers in parallel with different seeds; return list of worker results.
 
     If xchg_rounds > 1, workers cooperate: the budget is split into R rounds and,
@@ -591,6 +591,14 @@ def run_combo(method, gpath, total_min, p1_frac, base_seed,
     portfolio into a cooperative multi-start — effective where k keeps falling
     with budget (dense A6). Round 0 runs the full method (incl. its init stage);
     later rounds run one sakgd stage from the elite with --init input.
+
+    half_share splits the pool: the low-half worker ids stay INDEPENDENT (each
+    later round warm-starts from its own previous layout, never the elite),
+    preserving exploration; the high-half adopt the shared elite (intensify).
+    The election still considers every worker, so an independent worker can
+    become the elite. Empirically (2026-06-30 sweep) this is no-regret: it keeps
+    pure-independent's edge on low-k bottleneck graphs (A4/A8) AND captures the
+    sharing gains on high-k graphs (A5/A6) — strictly better than either alone.
     """
     kband     = METHOD_BY_ID[method].get("kband", 2)
     extra     = _final_stage_extra(method)
@@ -614,7 +622,10 @@ def run_combo(method, gpath, total_min, p1_frac, base_seed,
             rmin   = total_min / xchg_rounds
             first  = None
             out    = None
+            # half-sharing: low-half ids explore independently, high-half adopt elite.
+            independent = half_share and wid < n_workers // 2
             for r in range(xchg_rounds):
+                prev_self = out                     # this worker's own last layout
                 if r == 0:
                     out, rc, sec, flog, glog = run_method(
                         METHOD_BY_ID[method], inp, rmin, p1_frac,
@@ -622,10 +633,17 @@ def run_combo(method, gpath, total_min, p1_frac, base_seed,
                         nh_size, nh_cands, ils_perturb, lns_frac)
                     first = parse_log(flog)
                 else:
-                    # warm-start one sakgd stage from the shared elite layout.
+                    # Independent workers continue from their own previous layout;
+                    # sharers warm-start from the shared elite.
+                    if independent and prev_self and Path(prev_self).exists():
+                        src = prev_self
+                    elif elite.exists():
+                        src = elite
+                    else:
+                        src = inp
                     out  = out_dir / f"{method}{suffix}_r{r}.json"
                     glog = out_dir / f"{method}{suffix}_r{r}.log"
-                    cmd  = [str(SAKGD), "-i", str(elite if elite.exists() else inp),
+                    cmd  = [str(SAKGD), "-i", str(src),
                             "-o", str(out), "-t", mins(rmin),
                             "-p1", mins(rmin * 0.02), "-s", str(seed + r * 1000),
                             "--init", "input"]
@@ -1649,6 +1667,10 @@ def main():
     ap.add_argument("--xchg-rounds",     type=int,   default=1,
                     help="cross-worker best-exchange rounds (1 = off; workers "
                          "warm-start each round from the shared elite layout)")
+    ap.add_argument("--xchg-half",       action="store_true",
+                    help="half-sharing: low-half workers explore independently, "
+                         "high-half adopt the shared elite (no-regret; needs "
+                         "--xchg-rounds > 1 and --workers >= 2)")
     ap.add_argument("--seed",            type=int,   default=42)
     ap.add_argument("--out-dir",         default="results")
     ap.add_argument("--run-name",        default="",
@@ -1753,6 +1775,7 @@ def main():
                 out_dir, args.workers, nh_size, args.nh_cands,
                 args.staged_lns_frac, args.ils_perturb,
                 gpath_warm=warm_path, xchg_rounds=args.xchg_rounds,
+                half_share=args.xchg_half,
             )
             t_wall = time.time() - t_wall_start
 
