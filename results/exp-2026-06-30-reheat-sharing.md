@@ -87,3 +87,26 @@ Caveat: per-graph budgets are still mapped by **graph index** (1-4 small / 5-7,9
 medium / 8 large), tuned for the old 10k-node A8. For the professor's new graphs,
 size them explicitly with `--minutes-*` (or set all three equal) so the budget
 matches each graph's actual difficulty.
+
+## Contest orchestrator (`contest_orchestrate.py`)
+
+For the contest itself, the budget is a single wall-clock number and the per-graph
+difficulty is unknown, so `contest_orchestrate.py` allocates adaptively instead of
+a fixed per-graph budget:
+
+- **Analyse** (n, m, density) → cold method per graph (sa-stress sparse / sa dense).
+- **Explore**: one cold lease per graph (hardest-first) to establish each k.
+- **Greedy reallocation**: each further quantum goes to the highest-priority live
+  graph — priority = `current_k × improving_boost ÷ leases_served`, so budget
+  **spreads across all hard graphs** (worst-k first, least-serviced rotates in)
+  rather than one descent monopolising it. Stalled graphs are dropped (banked).
+- Every lease runs the validated **half-sharing** config (W workers, xchg=4).
+- **Deadline-safe**: a per-subprocess backstop clamps every solver to a hard
+  deadline that reserves time for the final per-graph verify + submission copy, so
+  the run NEVER overruns the budget (validated: 381s wall on a 420s budget).
+
+```bash
+python3 contest_orchestrate.py --graphs 1-9 --budget 2700 --workers 8
+# 2700s = 45 min. -> results/submission/<run_id>/<graph>.json (one best per graph)
+python3 contest_orchestrate.py --self-test     # pure-logic checks, no solver
+```

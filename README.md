@@ -263,6 +263,30 @@ results/
 
 ---
 
+## Contest orchestrator (`contest_orchestrate.py`)
+
+Deadline-safe adaptive scheduler for a single wall-clock budget (e.g. 40–50 min).
+Analyses each graph (n, m, density), picks the cold method per graph, gives every
+graph one explore lease, then **reallocates the rest of the budget to the hardest
+graphs** (priority `current_k × improving_boost ÷ leases`, so the worst graphs get
+the most time while least-serviced peers rotate in). Every lease runs the validated
+half-sharing config (`--xchg-rounds 4`, half independent / half shared). A
+per-subprocess backstop guarantees it **never overruns** the budget, reserving time
+for the final per-graph verify + submission copy.
+
+```bash
+python3 contest_orchestrate.py --graphs 1-9 --budget 2700 --workers 8
+#   -> results/submission/<run_id>/<graph>.json   (one best VALID layout per graph)
+#      results/bests.json                          (best-k metadata)
+python3 contest_orchestrate.py --self-test         # pure-logic checks, no solver
+```
+
+Validated: on a 420 s budget it finishes in 381 s with a valid layout for all 9
+graphs (see [results/exp-2026-06-30-reheat-sharing.md](results/exp-2026-06-30-reheat-sharing.md)).
+Use a fresh `--out-dir` per contest so `bests.json` starts clean.
+
+---
+
 ## JSON format
 
 ```json
