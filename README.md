@@ -285,6 +285,17 @@ Validated: on a 420 s budget it finishes in 381 s with a valid layout for all 9
 graphs (see [results/exp-2026-06-30-reheat-sharing.md](results/exp-2026-06-30-reheat-sharing.md)).
 Use a fresh `--out-dir` per contest so `bests.json` starts clean.
 
+Point it at any folder of graphs (submissions keep the original file names):
+
+```bash
+python3 contest_orchestrate.py --graphs-dir /path/to/graphs --budget 2700 --workers 8
+```
+
+**In the server UI** (`python3 server.py`): the Run Control panel has a
+**Batch / Orchestrator** toggle. In Orchestrator mode, type/paste the graph folder,
+click **Scan** to preview the graphs found, then **Scan & Run** to auto-start the
+orchestrator; live log + a per-graph k/leases/valid table stream while it runs.
+
 ---
 
 ## JSON format

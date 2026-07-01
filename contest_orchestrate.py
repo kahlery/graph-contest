@@ -131,7 +131,7 @@ def converged(g):
 class ContestOrchestrator:
     def __init__(self, graphs_spec, budget, workers, out_dir, seed=1,
                  xchg_rounds=XCHG_ROUNDS, half_share=True, dense_dens=DENSE_DENS,
-                 quantum_override=None, verbose=True):
+                 quantum_override=None, verbose=True, graphs_dir=None):
         self.budget = float(budget)
         self.W = int(workers)
         self.seed = int(seed)
@@ -149,7 +149,7 @@ class ContestOrchestrator:
         self.t0 = None
         self.max_overrun = 0.0
         self.lease_log = []
-        self.G = self._build(graphs_spec)
+        self.G = self._build(graphs_spec, graphs_dir)
 
     def log(self, msg):
         if self.verbose:
@@ -158,17 +158,36 @@ class ContestOrchestrator:
     def now(self):
         return time.monotonic() - self.t0 if self.t0 else 0.0
 
-    def _build(self, spec):
-        G = {}
-        for tok in parse_graph_spec(spec):
+    @staticmethod
+    def scan_dir(graphs_dir):
+        """Every *.json in a folder that parses as a graph (has nodes+edges),
+        as (name=file stem, absolute path). Used by --graphs-dir and the server's
+        folder picker so submissions keep the ORIGINAL file names."""
+        entries = []
+        d = Path(graphs_dir).expanduser()
+        for f in sorted(d.glob("*.json")):
             try:
-                p = graph_path(tok)
+                n, m = graph_size(f)
+            except Exception:
+                continue
+            if n > 0:
+                entries.append((f.stem, f.resolve(), n, m))
+        return entries
+
+    def _build(self, spec, graphs_dir=None):
+        G = {}
+        if graphs_dir:
+            items = [(nm, p) for nm, p, _n, _m in self.scan_dir(graphs_dir)]
+        else:
+            items = [(graph_name(tok, graph_path(tok)), graph_path(tok))
+                     for tok in parse_graph_spec(spec)]
+        for nm, p in items:
+            try:
                 n, m = graph_size(p)
             except Exception as e:
-                print(f"[corch] WARN skip {tok}: {e}", file=sys.stderr)
+                print(f"[corch] WARN skip {nm}: {e}", file=sys.stderr)
                 continue
-            nm = graph_name(tok, p)
-            G[nm] = dict(tok=tok, path=str(p), n=n, m=m,
+            G[nm] = dict(tok=nm, path=str(p), n=n, m=m,
                          method0=cold_method(n, m, self.no_graphviz, self.dense_dens),
                          best_k=None, best_x=None, warm=None,
                          leases=0, stalls=0, last_dk=0.0, last_dxf=0.0,
@@ -405,6 +424,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--graphs", default="1-9", help="graph set (run_contest syntax)")
+    ap.add_argument("--graphs-dir", default=None,
+                    help="run on every *.json graph in this folder (submissions keep "
+                         "the original file names); overrides --graphs")
     ap.add_argument("--budget", type=float, default=2700, help="total wall-clock seconds")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out-dir", default="results")
@@ -421,7 +443,7 @@ def main():
     ContestOrchestrator(args.graphs, args.budget, args.workers, args.out_dir,
                         seed=args.seed, xchg_rounds=args.xchg_rounds,
                         half_share=not args.no_half, dense_dens=args.dense_density,
-                        quantum_override=args.quantum).run()
+                        quantum_override=args.quantum, graphs_dir=args.graphs_dir).run()
     return 0
 
 

@@ -38,6 +38,7 @@ _loop_stop   = threading.Event()
 _loop_thread = None
 _config = {
     "run_name":       "",
+    "mode":           "batch",          # "batch" (run_contest) | "orchestrator"
     "methods":        "sa,sa-stress,ils",
     "graphs":         "1-9",
     "minutes_small":  1.0,
@@ -48,7 +49,15 @@ _config = {
     "warm_start":     False,
     "loop":           False,
     "cooldown_sec":   60,
+    # orchestrator mode
+    "orch_budget_min": 45.0,            # total wall-clock budget (minutes)
+    "orch_workers":    8,
+    "graphs_dir":      "",              # folder of *.json graphs (overrides graphs)
+    "orch_out_dir":    "results_internal",
 }
+
+_ORCH_LOG  = ROOT / "results_internal" / "orch_server.log"
+_orch_logf = None                       # kept open for the child's stdout
 
 
 def _alive():
@@ -67,6 +76,17 @@ def _latest_run_dir():
 
 
 def _build_cmd():
+    if _config.get("mode") == "orchestrator":
+        cmd = [
+            sys.executable, str(ROOT / "contest_orchestrate.py"),
+            "--budget",  str(round(float(_config["orch_budget_min"]) * 60.0, 1)),
+            "--workers", str(int(_config["orch_workers"])),
+            "--out-dir", str(_config.get("orch_out_dir") or "results_internal"),
+            "--seed",    str(int(_config["seed"])),
+        ]
+        gd = str(_config.get("graphs_dir", "")).strip()
+        cmd += ["--graphs-dir", gd] if gd else ["--graphs", str(_config["graphs"])]
+        return cmd
     cmd = [
         sys.executable, str(ROOT / "run_contest.py"),
         "--methods",        str(_config["methods"]),
@@ -82,6 +102,20 @@ def _build_cmd():
     if str(_config.get("run_name", "")).strip():
         cmd += ["--run-name", str(_config["run_name"]).strip()]
     return cmd
+
+
+def _spawn():
+    """Launch the configured run. Orchestrator stdout is captured to _ORCH_LOG so
+    the UI can stream progress; batch runs stay silent (their live status comes
+    from run_contest's own status files)."""
+    global _orch_logf
+    if _config.get("mode") == "orchestrator":
+        _ORCH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        _orch_logf = open(_ORCH_LOG, "w")
+        return subprocess.Popen(_build_cmd(), cwd=ROOT,
+                                stdout=_orch_logf, stderr=subprocess.STDOUT)
+    return subprocess.Popen(_build_cmd(), cwd=ROOT,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _loop_worker():
@@ -104,9 +138,7 @@ def _loop_worker():
         with _lock:
             if _loop_stop.is_set():
                 break
-            _proc = subprocess.Popen(_build_cmd(), cwd=ROOT,
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
+            _proc = _spawn()
 
 
 def api_status():
@@ -174,11 +206,9 @@ def api_start(body: dict):
         if _alive():
             return {"ok": False, "error": "A run is already active — stop it first."}
         _config.update({k: v for k, v in body.items() if k in _config})
-        _proc = subprocess.Popen(_build_cmd(), cwd=ROOT,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+        _proc = _spawn()
         pid = _proc.pid
-        if _config.get("loop"):
+        if _config.get("loop") and _config.get("mode") != "orchestrator":
             _loop_stop.clear()
             _loop_thread = threading.Thread(target=_loop_worker, daemon=True, name="loop")
             _loop_thread.start()
@@ -197,6 +227,51 @@ def api_stop():
                 _proc.kill()
             _proc = None
     return {"ok": True}
+
+
+def api_scan_folder(body: dict):
+    """Preview a folder for the orchestrator: list every *.json that parses as a
+    graph (has nodes+edges), so the UI can confirm before auto-running."""
+    path = str(body.get("path", "")).strip()
+    if not path:
+        return {"ok": False, "error": "Enter a folder path."}
+    p = Path(path).expanduser()
+    if not p.exists():
+        return {"ok": False, "error": f"Not found: {p}"}
+    if not p.is_dir():
+        return {"ok": False, "error": f"Not a folder: {p}"}
+    from contest_orchestrate import ContestOrchestrator
+    try:
+        entries = ContestOrchestrator.scan_dir(str(p))
+    except Exception as e:
+        return {"ok": False, "error": f"Scan failed: {e}"}
+    if not entries:
+        return {"ok": False, "error": f"No graph .json files in {p}"}
+    return {"ok": True, "path": str(p.resolve()), "count": len(entries),
+            "graphs": [{"name": nm, "n": n, "m": m} for nm, _pp, n, m in entries]}
+
+
+def api_orch_status():
+    """Orchestrator progress: tail of its stdout log + the latest run's summary."""
+    running = _alive() and _config.get("mode") == "orchestrator"
+    out = {"running": running, "log": "", "summary": None}
+    if _ORCH_LOG.exists():
+        try:
+            out["log"] = "\n".join(
+                _ORCH_LOG.read_text(errors="replace").splitlines()[-60:])
+        except Exception:
+            pass
+    runs = Path(_config.get("orch_out_dir") or "results_internal") / "runs"
+    if runs.exists():
+        for d in sorted((x for x in runs.iterdir() if x.is_dir()), reverse=True):
+            f = d / "orchestration.json"
+            if f.exists():
+                try:
+                    out["summary"] = json.loads(f.read_text())
+                except Exception:
+                    pass
+                break
+    return out
 
 
 # ── injected HTML / CSS / JS ──────────────────────────────────────────────────
@@ -288,6 +363,18 @@ _CTRL_CSS = """
   .ls-done { color:#15803d; font-weight:700; font-size:.77rem; }
   .ls-done-cell { background:#f0fdf4 !important; }
   .ls-active-cell { background:#fffbeb !important; }
+
+  /* ── mode toggle (Batch / Orchestrator) ── */
+  .mode-toggle { display:flex; gap:0; border:1px solid var(--border,#d0d0d0);
+                 border-radius:6px; overflow:hidden; }
+  .mode-btn { flex:1; padding:6px 8px; font-size:.78rem; font-weight:700; border:0;
+              background:#fff; color:var(--muted,#64748b); cursor:pointer;
+              transition:background .15s,color .15s; }
+  .mode-btn + .mode-btn { border-left:1px solid var(--border,#d0d0d0); }
+  .mode-btn.active { background:var(--accent,#4f46e5); color:#fff; }
+  #orch-log { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.7rem;
+              white-space:pre-wrap; background:#0f172a; color:#cbd5e1; padding:10px;
+              border-radius:6px; max-height:260px; overflow:auto; line-height:1.45; }
 """
 
 _CTRL_PANEL = """
@@ -304,6 +391,49 @@ _CTRL_PANEL = """
            style="width:100%;box-sizing:border-box">
   </div>
 
+  <div class="cfg-section">
+    <div class="cfg-label">Mode</div>
+    <div class="mode-toggle">
+      <button type="button" id="mode-batch" class="mode-btn active" onclick="setMode('batch')">Batch</button>
+      <button type="button" id="mode-orch"  class="mode-btn"        onclick="setMode('orchestrator')">Orchestrator</button>
+    </div>
+  </div>
+
+  <!-- ORCHESTRATOR MODE: pick a folder of graphs, auto-run within a wall-clock budget -->
+  <div id="orch-fields" style="display:none">
+    <div class="cfg-section">
+      <div class="cfg-label">Graphs folder</div>
+      <input id="cfg-graphs-dir" type="text" class="cfg-input"
+             placeholder="/path/to/folder-with-Automatic-*.json"
+             value="data/live-2025-contest/live-contest">
+      <div style="display:flex;gap:5px;margin-top:5px">
+        <button type="button" class="btn" style="flex:1;padding:5px;font-size:.78rem"
+                onclick="orchScan()">🔍 Scan</button>
+      </div>
+      <div id="orch-scan-result" style="font-size:.72rem;color:var(--muted);margin-top:5px"></div>
+    </div>
+    <div class="cfg-section" style="display:flex;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:90px">
+        <div class="cfg-label">Budget (min)</div>
+        <input id="cfg-orch-budget" type="number" class="cfg-input cfg-num" value="45" min="1" step="1">
+      </div>
+      <div style="flex:1;min-width:70px">
+        <div class="cfg-label">Workers</div>
+        <input id="cfg-orch-workers" type="number" class="cfg-input cfg-num" value="8" min="1" max="32">
+      </div>
+    </div>
+    <div class="cfg-section">
+      <button type="button" class="btn btn-start" style="width:100%"
+              onclick="orchScanAndRun()">▶ Scan &amp; Run Orchestrator</button>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:4px">
+        Analyses each graph, spends the budget adaptively (half-sharing), writes one
+        best layout per graph to <code>&lt;out&gt;/submission/</code>. Never overruns.
+      </div>
+    </div>
+  </div>
+
+  <!-- BATCH MODE (run_contest.py): explicit methods + per-size budgets -->
+  <div id="batch-fields">
   <div class="cfg-section">
     <div class="cfg-label">Methods</div>
     <!-- Checkboxes are rendered from /api/methods (run_contest.METHODS). -->
@@ -356,6 +486,7 @@ _CTRL_PANEL = """
       <span style="font-size:.72rem;color:var(--muted)">seconds</span>
     </div>
   </div>
+  </div><!-- /batch-fields -->
 
   <div class="ctrl-btns">
     <button id="btn-start"   class="btn btn-start"   onclick="ctrlStart()">▶ Start Run</button>
@@ -449,6 +580,7 @@ _CTRL_JS = r"""
     ).join(',');
     return {
       methods,
+      mode:            CUR_MODE,
       run_name:       document.getElementById('cfg-run-name').value.trim(),
       graphs:         document.getElementById('cfg-graphs').value.trim(),
       minutes_small:  parseFloat(document.getElementById('cfg-small').value),
@@ -459,8 +591,61 @@ _CTRL_JS = r"""
       warm_start:     document.getElementById('cfg-warm').checked,
       loop:           document.getElementById('cfg-loop').checked,
       cooldown_sec:   parseInt(document.getElementById('cfg-cooldown').value) || 60,
+      graphs_dir:      document.getElementById('cfg-graphs-dir').value.trim(),
+      orch_budget_min: parseFloat(document.getElementById('cfg-orch-budget').value),
+      orch_workers:    parseInt(document.getElementById('cfg-orch-workers').value),
     };
   }
+
+  // ── mode toggle (Batch vs Orchestrator) ─────────────────────────────────────
+  let CUR_MODE = 'batch';
+  window.setMode = function (mode) {
+    CUR_MODE = mode;
+    document.getElementById('batch-fields').style.display = mode === 'batch' ? '' : 'none';
+    document.getElementById('orch-fields').style.display  = mode === 'batch' ? 'none' : '';
+    document.getElementById('mode-batch').classList.toggle('active', mode === 'batch');
+    document.getElementById('mode-orch').classList.toggle('active', mode !== 'batch');
+    // the shared Start button drives batch; the orchestrator has its own Scan & Run
+    document.getElementById('btn-start').style.display = mode === 'batch' ? '' : 'none';
+  };
+
+  async function orchScan() {
+    const path = document.getElementById('cfg-graphs-dir').value.trim();
+    const el = document.getElementById('orch-scan-result');
+    el.style.color = 'var(--muted)';
+    el.textContent = 'Scanning…';
+    try {
+      const r = await fetch('/api/scan-folder', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ path }),
+      });
+      const d = await r.json();
+      if (!d.ok) { el.style.color = '#b91c1c'; el.textContent = '✕ ' + d.error; return null; }
+      el.style.color = '#15803d';
+      const names = d.graphs.map(g => `${g.name} (n=${g.n},m=${g.m})`).join(', ');
+      el.textContent = `✓ ${d.count} graph${d.count>1?'s':''}: ${names}`;
+      return d;
+    } catch (e) {
+      el.style.color = '#b91c1c'; el.textContent = '✕ scan failed'; return null;
+    }
+  }
+  window.orchScan = orchScan;
+
+  window.orchScanAndRun = async function () {
+    const d = await orchScan();
+    if (!d) { setMsg('Fix the folder path first.', true); return; }
+    setMode('orchestrator');
+    setMsg(`Starting orchestrator on ${d.count} graphs…`, false);
+    const res = await fetch('/api/start', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(readCfg()),
+    });
+    const data = await res.json();
+    if (!data.ok) { setMsg(data.error || 'Error', true); return; }
+    const bud = document.getElementById('cfg-orch-budget').value;
+    setMsg(`Orchestrator running (PID ${data.pid}) — budget ${bud} min`, false);
+    clearTimeout(pollTimer); poll();
+  };
 
   function syncCfg(c) {
     if (!c) return;
@@ -481,6 +666,49 @@ _CTRL_JS = r"""
     if (c.warm_start     != null) document.getElementById('cfg-warm').checked    = c.warm_start;
     if (c.loop           != null) { document.getElementById('cfg-loop').checked  = c.loop; toggleCooldown(); }
     if (c.cooldown_sec   != null) document.getElementById('cfg-cooldown').value  = c.cooldown_sec;
+    if (c.graphs_dir     != null && c.graphs_dir) document.getElementById('cfg-graphs-dir').value = c.graphs_dir;
+    if (c.orch_budget_min!= null) document.getElementById('cfg-orch-budget').value  = c.orch_budget_min;
+    if (c.orch_workers   != null) document.getElementById('cfg-orch-workers').value = c.orch_workers;
+    if (c.mode           != null) setMode(c.mode);
+  }
+
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  }
+
+  // ── orchestrator progress (log tail + per-graph summary) ────────────────────
+  async function renderOrch(status) {
+    const el = document.getElementById('run-progress-section');
+    if (!el) return;
+    let d = {};
+    try { d = await (await fetch('/api/orch-status')).json(); } catch (e) {}
+    const running = status.running;
+    const pill = running
+      ? '<span class="status-pill s-running">● Running</span>'
+      : (d.summary ? '<span class="status-pill s-done">✓ Completed</span>'
+                   : '<span class="status-pill s-idle">○ Idle</span>');
+    let body = '';
+    if (d.summary && d.summary.summary) {
+      const s = d.summary.summary;
+      const ks = Object.values(s).map(x => x.k).filter(x => x != null);
+      body += `<div style="font-size:.82rem;margin-bottom:8px">worst-k=<b>${ks.length?Math.max(...ks):'—'}</b>`
+            + ` &middot; sum-k=<b>${ks.length?ks.reduce((a,b)=>a+b,0):'—'}</b>`
+            + ` &middot; wall ${Math.round(d.summary.wall_sec)}/${Math.round(d.summary.budget_sec)}s</div>`;
+      body += '<table style="width:100%;border-collapse:collapse;font-size:.78rem">'
+            + '<tr style="text-align:left;color:#888"><th>graph</th><th>k</th><th>totalX</th><th>leases</th><th>valid</th></tr>';
+      for (const [g, v] of Object.entries(s).sort()) {
+        body += `<tr><td style="font-weight:600">${g}</td><td>${v.k}</td>`
+              + `<td>${v.totalX ?? '—'}</td><td>${v.leases}</td>`
+              + `<td>${v.valid ? '✓' : '<span style="color:#b91c1c">✕</span>'}</td></tr>`;
+      }
+      body += '</table>';
+    }
+    el.innerHTML = `<h2 id="sec-progress">Orchestrator &nbsp;${pill}</h2>`
+      + `<div class="card">${body || '<em style="color:#aaa">Waiting for the first lease…</em>'}`
+      + `<div style="margin-top:10px"><div class="cfg-label">Live log</div>`
+      + `<div id="orch-log">${escapeHtml(d.log || '(no output yet)')}</div></div></div>`;
+    const log = document.getElementById('orch-log');
+    if (log) log.scrollTop = log.scrollHeight;
   }
 
   function toggleCooldown() {
@@ -760,14 +988,20 @@ _CTRL_JS = r"""
   // ── poll loop ──────────────────────────────────────────────────────────────
   async function poll() {
     try {
-      const [sr, lr] = await Promise.all([fetch('/api/status'), fetch('/api/live')]);
-      const status   = await sr.json();
-      const live     = await lr.json();
+      const status = await (await fetch('/api/status')).json();
       if (_firstPoll) { syncCfg(status.config); _firstPoll = false; }
       setCtrlStatus(status.running, status.looping);
-      renderProgress(status, live);
-      renderLive(live);
-      renderGraphBest(live);
+      // while a run is active, follow its actual mode; when idle, follow the toggle
+      const mode = status.running ? ((status.config && status.config.mode) || CUR_MODE)
+                                  : CUR_MODE;
+      if (mode === 'orchestrator') {
+        await renderOrch(status);
+      } else {
+        const live = await (await fetch('/api/live')).json();
+        renderProgress(status, live);
+        renderLive(live);
+        renderGraphBest(live);
+      }
     } catch (e) { console.warn('poll error', e); }
     pollTimer = setTimeout(poll, POLL_MS);
   }
@@ -848,6 +1082,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(api_gda_graphs())
         elif path == "/api/live":
             self._json(api_live())
+        elif path == "/api/orch-status":
+            self._json(api_orch_status())
         else:
             self.send_error(404)
 
@@ -859,6 +1095,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(api_start(body))
         elif path == "/api/stop":
             self._json(api_stop())
+        elif path == "/api/scan-folder":
+            self._json(api_scan_folder(body))
         else:
             self.send_error(404)
 
