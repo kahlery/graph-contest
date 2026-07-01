@@ -351,7 +351,7 @@ class ContestOrchestrator:
         print("-" * 74)
         print(f"worst-k={max(ks) if ks else None}  sum-k={sum(ks) if ks else None}  "
               f"wall={report['wall_sec']:.0f}/{report['budget_sec']:.0f}s  "
-              f"submissions in results/submission/{report['run_id']}/")
+              f"submissions in {self.out_root}/submission/{report['run_id']}/")
         print("=" * 74)
 
 
