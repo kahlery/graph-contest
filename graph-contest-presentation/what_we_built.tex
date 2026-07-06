@@ -1,0 +1,83 @@
+\section{What We Built \& What We Found}
+
+% ---------------------------------------------------------------
+\begin{frame}{Correctness \& Throughput --- Making A8 Run At All}
+  \textbf{Jun 5: Automatic-8 wrote no output.} The largest instance ($10\,466$ nodes
+  in a tight $342{\times}294$ canvas) has vertices sitting on foreign edges, an
+  invalid layout the solver must repair first. The old $O(n\cdot m)$ repair never
+  converged, so the program exited without a file.
+  \medskip
+
+  Two fixes, both shipped in the final solver:
+  \begin{itemize}
+    \item \textbf{Grid-accelerated repair} --- A vertex grid shares the edge-grid
+          geometry, so each vertex only checks nearby edges. Multi-pass relocation
+          with expanding radius; A8 now repairs in \emph{seconds}.
+    \item \textbf{\texttt{restoreBest} skip} --- Wave restarts recomputed \emph{all}
+          crossings: \textbf{27\% of A8's phase-1 budget}. Skip it when the state
+          already matches the best $\Rightarrow$ $342$k $\to$ $1.01$M moves
+          (\textbf{$3\times$}).
+  \end{itemize}
+  \medskip
+  \footnotesize A faster per-move overlap check and an LNS time-guard round out the
+  throughput work.
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{The Main Lever --- Stress Initialisation}
+  \textbf{Reading the winners again} --- Our SA parameters already matched the winning
+  paper \emph{exactly}. The real difference was their \emph{initialisation}: a
+  force-directed layout (OGDF stress majorisation + FMMM).
+  \medskip
+
+  \textbf{Our method \texttt{sa-stress}} (\texttt{tools/stress\_init.py}) --- graphviz
+  \texttt{sfdp}/\texttt{neato} $\to$ scale to canvas $\to$ integer grid snap $\to$
+  spiral collision resolution, then the same two-phase SA on top. Same idea as OGDF,
+  an off-the-shelf tool instead.
+  \medskip
+
+  \textbf{Pick the best candidate} --- Run the layout up to 8 times, estimate each
+  one's crossing density from $200$k sampled edge pairs (a full count is $\sim$205M),
+  hand the sparsest to SA.
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{Stress Initialisation --- Why It Wins}
+  \begin{center}
+    \begin{tabular}{lrrr}
+      \toprule
+      full budget, 8 workers & A7 & A8 & A9 \\
+      \midrule
+      best before stress init   & 39 & 31 & 21 \\
+      \textbf{with stress init}  & \textbf{28} & \textbf{7} & \textbf{10} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item \textbf{Not luck, reproducible} --- A \emph{single} 2.5-min run reaches
+          $k=8\text{--}9$ on A8. The init alone starts SA at $k=24\text{--}27$, before
+          a single move --- already past GD'25 winner ($15$). Best across runs: $\mathbf{7}$.
+    \item \texttt{sfdp} beat \texttt{neato} everywhere; on $n>3000$ only \texttt{sfdp} runs.
+    \item One exception: dense A6 resists \emph{any} init --- more on the final slide.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{Phase 2 --- $k$-Critical Vertex Selection}
+  \textbf{The observation} --- Phase 2 minimises the \emph{maximum} crossings on a
+  single edge ($k$), but vertices were picked by their \emph{total} crossings ---
+  effort spread everywhere except the bottleneck.
+  \medskip
+
+  \textbf{The change} --- Bias selection towards endpoints of edges within a band
+  $\beta=2$ of the current $k$, with quadratic emphasis on proximity to $k$.
+  \begin{itemize}
+    \item \textbf{A/B (A7, 2\,min, same seeds):} $k=55/61$ with vs.\ $77/75$ without.
+    \item \textbf{Hidden scaling bug, later fixed:} a fixed base mass made $\sim$97\%
+          of A8's picks effectively uniform; scaling it to the critical mass restores
+          $\sim$75\% critical picks at any $n$.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------

@@ -1,0 +1,68 @@
+\section{Results \& Lessons}
+
+\begin{frame}{Final Results: All Nine Instances}
+  Best validated $k$ per instance (accumulated over our runs), against last year's
+  live leaderboard and the GD'25 winning team:
+  \begin{center}
+    \footnotesize
+    \begin{tabular}{lrrll}
+      \toprule
+      \textbf{Graph} & \textbf{Ours} & \textbf{Method} & \textbf{GD'25 winner} \\
+      \midrule
+      Automatic-1 & 9   & \texttt{sa}        & 9   \\
+      Automatic-2 & 3   & \texttt{sa}        & 3   \\
+      Automatic-3 & 35  & \texttt{sa}        & 34   \\
+      Automatic-4 & 6   & \texttt{ils}       & 6   \\
+      Automatic-5 & 75  & \texttt{staged}    & 76   \\
+      Automatic-6 & 624 & \texttt{sa}        & 568 (49\,min) \\
+      Automatic-7 & \textbf{28}  & \texttt{sa-stress}   & 31   \\
+      Automatic-8 & \textbf{6}   & \texttt{sa-stress}   & 15   \\
+      Automatic-9 & \textbf{10}  & \texttt{sa-stress}   & 12   \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  \smallskip
+  \begin{itemize}
+    \item \textbf{Ahead of the winning team on A7, A8, A9} (A8: $15 \to 6$);
+          A6 is the one open front.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Automatic-8: What Each Improvement Bought}
+  \centering
+\begin{tikzpicture}
+    \begin{axis}[width=0.86\linewidth,height=6.1cm,
+        ybar, bar width=16pt,
+        symbolic x coords={input start,snake init,+smoothing,sa-stress},
+        xtick=data, ymode=log, log origin=infty,
+        ymin=1, ymax=30000,
+        ylabel={final $k$ (log scale)},
+        point meta=rawy,
+        nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+        every node near coord/.append style={font=\scriptsize},
+        tick label style={font=\scriptsize},label style={font=\scriptsize}]
+      \addplot[fill=accent!70] coordinates
+        {(input start,10011) (snake init,247) (+smoothing,52) (sa-stress,7)};
+    \end{axis}
+  \end{tikzpicture}
+
+  \smallskip
+  Setup: $\sim$12\,min $\to$ $\sim$8\,s. Validity: \emph{none} $\to$ exact-verified on all graphs.
+\end{frame}
+
+
+\begin{frame}{What Remains \& Takeaway}
+
+  \textbf{If you remember one thing:}
+  \begin{center}
+    \emph{We took the winning team's solver design, made it correct on the hardest input,
+    3$\times$ faster in the move loop on that instance, and gave it a better starting
+    point ---\\
+    and that was enough to beat the winner's published results on a third of the instances.}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item Code, pipeline, dashboard and all experiment logs:
+          \texttt{github.com/kahlery/graph-contest}
+  \end{itemize}
+\end{frame}
