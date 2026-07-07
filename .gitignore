@@ -6,16 +6,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
-sakgd
-approach1
-sakgd_baseline
-approach1_baseline
+/bin/
 *.dSYM/
 runs/
-data/*.out.json
-data/test*.json
 *.tmp
 
 # Batch pipeline: keep the summaries, ignore the heavy per-run layouts/logs.
-results/**/*.json
-results/**/*.log
+data/output/**/*.json
+data/output/**/*.log

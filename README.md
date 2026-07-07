@@ -19,20 +19,94 @@ Minimise **k = max crossings on any single edge**, breaking ties by total crossi
 
 ---
 
-## Files
+## Project structure
 
-| File | Description |
-|------|-------------|
-| `src/main.cpp` | Original solver (`./sakgd`) — Simulated Annealing only. JSON parser and spatial grid included; no external dependencies. |
-| `src/approach1_lns.cpp` | Approach 1 solver (`./approach1`) — adds Large Neighbourhood Search on top of the same SA infrastructure. Supports `--mode sa` (identical to `./sakgd`) and `--mode lns`. |
-| `tools/stress_init.py` | Stress/force-directed initial layout generator (graphviz sfdp/neato + grid snap). Powers the `sa-stress` method — strongest on sparse graphs. |
-| `dashboard.py` | Runs multiple solver workers in parallel and serves a live browser dashboard. |
-| `run_contest.py` | Batch runner: solves the 9 contest graphs with each method (`sa`, `staged`, `ils`, `lns`), tracks every run in `results/runs/`, maintains best-ever layouts in `results/best/`, and generates `results/report.html`. |
-| `dashboard/index.html` | Vanilla-JS frontend for the live dashboard. |
-| `data/` | Input graphs (JSON) and example solutions. |
-| `data/gda-testing/` | External benchmark suite from [YouSafe/gda-testing](https://github.com/YouSafe/gda-testing) — 219 generated graphs (circulant, kronecker, SBM, random planar, etc.) plus a reference team's k-results (`stats/team-1-*.csv`) for generalization checks beyond Automatic-1..9. |
-| `results/` | Best outputs per contest graph, plus per-run logs. |
-| `Makefile` | `make` / `make debug` / `make clean`. |
+The whole toolchain is native C++ — no Python, no runtime dependency beyond a
+C++17 compiler (and `graphviz`'s `sfdp`/`neato` binaries, shelled out to by
+`stress_init` for the `sa-stress` init).
+
+```
+graph-contest/
+├── Makefile                  # make / make debug / make clean -> everything into ./bin/
+├── bin/                       # gitignored build output — every binary lands here
+│   ├── sakgd
+│   ├── approach1
+│   ├── stress_init
+│   ├── run_contest
+│   ├── contest_orchestrate
+│   ├── server
+│   └── bench_reheat_sharing
+├── src/
+│   ├── main.cpp              # -> bin/sakgd — Simulated Annealing only
+│   ├── approach1_lns.cpp     # -> bin/approach1 — adds Large Neighbourhood Search
+│   ├── common/                # shared engine, used by every tool below
+│   │   ├── json.hpp           # minimal JSON parser/serializer (contest format)
+│   │   ├── subprocess.hpp     # fork/exec helpers: deadlines, combined-log capture
+│   │   ├── paths.hpp          # resolves each binary's own directory
+│   │   └── engine.hpp         # graph/method registry, run_method/run_combo, bests.json
+│   ├── tools/
+│   │   ├── stress_init.cpp    # -> bin/stress_init — force-directed init, powers `sa-stress`
+│   │   └── bench_reheat_sharing.cpp  # -> bin/bench_reheat_sharing — reheat/xchg sweep harness
+│   ├── runner/run_contest.cpp        # -> bin/run_contest — batch runner over graph×method combos
+│   ├── orchestrator/contest_orchestrate.cpp  # -> bin/contest_orchestrate — contest-day scheduler
+│   └── server/server.cpp             # -> bin/server — web UI (embeds its own HTML/JS)
+├── data/
+│   ├── input/                 # every subdirectory here is a selectable "input set"
+│   │   ├── internal-contest/      # the 9 official contest graphs (Automatic-1..9.json)
+│   │   └── 2025-real-contest/     # small example instances + solutions
+│   ├── archive/               # older/auxiliary graph suites, not listed or selectable
+│   │   ├── gda-testing/           # external benchmark suite (github.com/YouSafe/gda-testing)
+│   │   ├── final-graphs/
+│   │   └── exports/
+│   └── output/                # solver outputs, mirrors data/input/'s per-set layout
+│       ├── internal-contest/      # one folder per input set (gitignored per-run heavy files)
+│       │   ├── best/                  # best-ever layout per graph × method
+│       │   ├── runs/                  # every run, preserved
+│       │   ├── submission/            # contest_orchestrate's per-run final layouts
+│       │   ├── bests.json             # best k metadata (updated after every run)
+│       │   └── report.html            # static summary table, Swiss design matching the web UI
+│       ├── 2025-real-contest/
+│       ├── exp-*.md, orchestrator-slide.html, sa-stress-best/  # write-ups (not per-set)
+└── docs/                     # write-ups, figures, and presentation slides
+    ├── YAKLASIMLAR.md
+    ├── phase-screenshots/
+    ├── algo-doc/
+    └── presentation/         # LaTeX slides
+```
+
+Every tool in `bin/` resolves its own binary's directory at startup
+(`src/common/paths.hpp`) and treats its parent as the repo root, so
+`data/input/`, `data/output/`, `./bin/sakgd`/`./bin/approach1`, and each other are
+always found regardless of the current working directory — the same
+property the old Python scripts got from `Path(__file__).resolve().parent.parent`.
+
+**Input sets.** `run_contest` and `contest_orchestrate` both operate on
+"an input set": a directory of `*.json` graphs, selected one of three ways,
+in this priority order:
+1. `--graphs-dir PATH` — an arbitrary explicit folder (also how `data/archive/`
+   stays reachable without being listed).
+2. `--input-set NAME` — shorthand for `data/input/NAME`.
+3. Neither given — the tool lists `data/input/`'s subdirectories and prompts
+   interactively on stdin. (A non-interactive caller, e.g. the web UI's
+   spawned child, always passes one of the above; hitting stdin EOF at the
+   prompt fails fast with an error instead of hanging.)
+
+**Output layout mirrors input.** Unless `--out-dir` is given explicitly,
+output nests under `data/output/<name>`, where `<name>` is whichever input
+set (or `--graphs-dir`'s basename) was used — so `data/input/internal-contest/`
+and `data/output/internal-contest/` line up, and two different sets never
+collide on graph names.
+
+**Scope note:** the batch runner's method registry only carries the methods
+this README documents as the production set (`sa`, `sa-warm`, `sa-stress`,
+`staged`, `staged-adaptive`, `ils`). The prior Python version also carried
+~15 one-off dated research variants (`sa-stress-sq2/pro/cong/swap/lahc/thr`,
+`sa-hilbert`, `sa-bary`, `sa-cong`, `sa-swap`, and `-base` A/B comparison
+twins) whose own source comments already recorded their verdicts ("lost the
+A/B", "kept only for further exploration") — those were dropped rather than
+ported. The elaborate Chart.js `report.html` (convergence charts, run
+history) was also replaced with a plain static table plus the live-polling
+web UI below, per instruction to keep the web UI basic.
 
 ---
 
@@ -115,12 +189,17 @@ and decays geometrically from `T₀` to `tLim` over the phase budget.
 ## Build
 
 ```bash
-make           # builds both ./sakgd and ./approach1  (-O3)
-make debug     # debug build with ASAN/UBSAN
+make           # builds ./bin/sakgd, ./bin/approach1, and the contest tooling into ./bin/
+               # (stress_init, run_contest, contest_orchestrate, server,
+               # bench_reheat_sharing)  (-O3)
+make debug     # debug build of the two solvers with ASAN/UBSAN
 make clean
 ```
 
-Requires only a C++17 compiler (GCC or Clang). No external libraries.
+Requires only a C++17 compiler (GCC or Clang) and pthreads. No external
+libraries — `stress_init`'s `sa-stress` init additionally shells out to
+`sfdp`/`neato` (graphviz) if installed, falling back to the input layout
+if they aren't.
 
 ---
 
@@ -128,28 +207,28 @@ Requires only a C++17 compiler (GCC or Clang). No external libraries.
 
 ```bash
 # SA — 60 min total, 10 min phase 1
-./sakgd -i data/graph.json -o out.json -t 60 -p1 10
+./bin/sakgd -i data/input/graph.json -o out.json -t 60 -p1 10
 
 # ILS (Approach 1) — same timing, default kick size (n/10)
-./approach1 -i data/graph.json -o out.json -t 60 -p1 10 --mode ils
+./bin/approach1 -i data/input/graph.json -o out.json -t 60 -p1 10 --mode ils
 
 # ILS with explicit kick size
-./approach1 -i data/graph.json -o out.json -t 60 --mode ils --ils-perturb 20
+./bin/approach1 -i data/input/graph.json -o out.json -t 60 --mode ils --ils-perturb 20
 
 # LNS (Approach 1)
-./approach1 -i data/graph.json -o out.json -t 60 -p1 10 --mode lns
+./bin/approach1 -i data/input/graph.json -o out.json -t 60 -p1 10 --mode lns
 
-# SA via approach1 (identical result to ./sakgd)
-./approach1 -i data/graph.json -o out.json --mode sa
+# SA via approach1 (identical result to ./bin/sakgd)
+./bin/approach1 -i data/input/graph.json -o out.json --mode sa
 
 # Verify a solution (reports k, total crossings, validity)
-./sakgd --verify out.json
+./bin/sakgd --verify out.json
 
 # Reproducible run
-./sakgd -i data/graph.json -o out.json -s 12345
+./bin/sakgd -i data/input/graph.json -o out.json -s 12345
 ```
 
-### Shared flags (`./sakgd` and `./approach1`)
+### Shared flags (`./bin/sakgd` and `./bin/approach1`)
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -163,7 +242,7 @@ Requires only a C++17 compiler (GCC or Clang). No external libraries.
 | `--status-interval SEC` | `1.0` | Status write interval |
 | `--verify` | — | Report metrics and exit |
 
-### `./approach1`-only flags
+### `./bin/approach1`-only flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -174,53 +253,58 @@ Requires only a C++17 compiler (GCC or Clang). No external libraries.
 
 ---
 
-## Dashboard (parallel runs + live UI)
+## Web UI (`./bin/server`)
 
 ```bash
-# Interactive — prompts for graph, workers, time
-./dashboard.py
-
-# CLI — 4 workers, 60 min each
-./dashboard.py data/graph.json -n 4 -t 60 -p1 10
+./bin/server --port 8080
 ```
 
-Opens a browser tab showing live crossing counts, k-values, temperature progress,
-and a mini SVG preview for each worker. The best result across workers is
-highlighted.
+A deliberately basic, light-mode control panel (embedded HTML/CSS/JS, no
+external assets) that polls `/api/status` every 3 seconds. Start/stop either
+the batch runner or the contest orchestrator from the browser, watch the
+live combined log tail, and see `bests.json` (best k/totalX per graph ×
+method) update as runs complete. Only one run is active at a time.
 
 ---
 
-## Batch pipeline (`run_contest.py`)
+## Batch pipeline (`./bin/run_contest`)
 
-Solves the 9 contest graphs (`data/live-2025-contest/live-contest/Automatic-*.json`)
-with one or more methods and writes everything to `results/`.
+Solves every graph in a chosen input set (see **Input sets** above) with one
+or more methods and writes everything to `data/output/<input-set-name>/`.
 
 ```bash
-# Smoke test: 30 s per (graph × method), fast graphs
-python3 run_contest.py --minutes 0.5 --methods sa,staged,ils --graphs 1-7 --seed 42
+# Prompts: which input set? (lists data/input/*)
+./bin/run_contest --minutes-small 0.5 --minutes-medium 0.5 --methods sa,staged,ils --seed 42
 
-# Real run: 10 min per combination, all 9 graphs
-python3 run_contest.py --minutes 10 --methods sa,staged,ils --graphs 1-9 --seed 42
+# Explicit input set, no prompt
+./bin/run_contest --input-set internal-contest --minutes-small 10 --minutes-medium 10 --minutes-large 10 \
+                   --methods sa,staged,ils --seed 42
 
 # Warm-start from the best layouts found in previous runs
-python3 run_contest.py --minutes 10 --methods sa,staged,ils --warm-start
+./bin/run_contest --input-set internal-contest --methods sa,staged,ils --warm-start
 
-# Just regenerate the HTML report without running the solver
-python3 run_contest.py --report-only
+# Just regenerate report.html from data/output/internal-contest/ without running the solver
+./bin/run_contest --input-set internal-contest --report-only
 
-# Also run a graph from the gda-testing benchmark suite (data/gda-testing/graphs/);
-# entries are ";"-separated so commas in filenames are unambiguous
-python3 run_contest.py --methods sa-stress --graphs "8;circulant_graph/100_[1,2,3].json"
+# Explicit folder (e.g. the archived gda-testing benchmark suite, not a listed input set)
+./bin/run_contest --graphs-dir data/archive/gda-testing/graphs/circulant_graph --methods sa-stress
 ```
+
+Budget group (`small`/`medium`/`large`) is picked from each graph's own
+`n + m` (node + edge count), not a hardcoded per-graph table — any input set
+gets sensible budget scaling automatically, calibrated so the 9 official
+contest graphs land in the same groups as before.
 
 **Methods**
 
 | Method | What it runs |
 |--------|--------------|
-| `sa`     | Pure Simulated Annealing (`./sakgd`). |
-| `staged` | Contest-style chain: LNS for `--staged-lns-frac` of budget (default 30 %) to descend fast, then SA warm-started on that output for the remaining 70 %. |
-| `ils`    | Iterated Local Search: full SA inner run → random kick (relocate `n/10` nodes) → repeat, keeping global best across rounds. Escapes local optima that SA and LNS both get stuck in. |
-| `lns`    | Pure LNS (`./approach1 --mode lns`). |
+| `sa`               | Pure Simulated Annealing (`./bin/sakgd`). |
+| `sa-warm`          | Single `sakgd` stage forced to `--init input`; used by the orchestrator to resume from a best-so-far layout. |
+| `sa-stress`        | `./bin/stress_init` (force-directed layout) then SA warm-started on it — strongest on sparse graphs. |
+| `staged`           | LNS for `--staged-lns-frac` of budget (default 30 %) to descend fast, then SA warm-started on that output for the remaining 70 %. |
+| `staged-adaptive`  | Same as `staged` but with `approach1 --mode lns-adaptive`. |
+| `ils`              | Iterated Local Search: full SA inner run → random kick (relocate `n/10` nodes) → repeat, keeping global best across rounds. |
 
 **Cooperative worker sharing** (`--xchg-rounds R`, `--xchg-half`)
 
@@ -230,14 +314,14 @@ shared and workers warm-start the next round from it. `--xchg-half` keeps the
 low-half worker ids independent (exploration) and lets the high-half adopt the
 elite (intensification) — *no-regret*: it captures sharing's gains on high-k
 graphs without losing the independent edge on low-k bottleneck graphs. See
-[results/exp-2026-06-30-reheat-sharing.md](results/exp-2026-06-30-reheat-sharing.md).
+[data/output/exp-2026-06-30-reheat-sharing.md](data/output/exp-2026-06-30-reheat-sharing.md).
 Recommended for `sa-stress`: `--workers 6 --xchg-rounds 4 --xchg-half`
 (stagnation `--reheat` was tested and does **not** help — leave it off).
 
-**Output layout**
+**Output layout** (per input set — see **Output layout mirrors input** above)
 
 ```
-results/
+data/output/<input-set-name>/
   runs/
     2026-06-03_14-30-52_t10.0m_s42/   # every run is preserved
       Automatic-1/  sa.json sa.log  staged*.json/log  ils.json ils.log
@@ -246,7 +330,7 @@ results/
     Automatic-1/  sa.json  staged.json  ils.json   # best-ever per graph × method
   bests.json       # best k metadata (updated after every run)
   history.json     # full run log
-  report.html      # interactive HTML report (bar charts + history table)
+  report.html      # plain static summary table (best k/totalX per graph × method)
 ```
 
 **Notes / caveats**
@@ -255,15 +339,16 @@ results/
 - `ils` splits the budget into ~5 inner SA rounds with kicks between them.
 - The solver counts all initial crossings *before* the `-t` budget starts.
   On **Automatic-8** (10,466 nodes, ~45 M crossings) this setup is ~6 min per
-  launch — give the big graphs a long budget (`--minutes 60` or more).
+  launch — give the big graphs a long budget (`--minutes-large 60` or more).
 - **Automatic-8/9** inputs contain vertex-edge overlaps the solver may not be
   able to repair in a short budget; those runs are marked `[INVALID]` / ⚠️.
-- Open `results/report.html` in any browser after a run for the visual summary
-  (requires internet access for the Chart.js CDN).
+- `report.html` is a plain, no-JS static table — open it in any browser, no
+  internet connection needed. For a live view while a run is in progress,
+  use `./bin/server` instead (see below).
 
 ---
 
-## Contest orchestrator (`contest_orchestrate.py`)
+## Contest orchestrator (`./bin/contest_orchestrate`)
 
 Deadline-safe adaptive scheduler for a single wall-clock budget (e.g. 40–50 min).
 Analyses each graph (n, m, density), picks the cold method per graph, gives every
@@ -275,26 +360,26 @@ per-subprocess backstop guarantees it **never overruns** the budget, reserving t
 for the final per-graph verify + submission copy.
 
 ```bash
-python3 contest_orchestrate.py --graphs 1-9 --budget 2700 --workers 8
-#   -> results/submission/<run_id>/<graph>.json   (one best VALID layout per graph)
-#      results/bests.json                          (best-k metadata)
-python3 contest_orchestrate.py --self-test         # pure-logic checks, no solver
+./bin/contest_orchestrate --input-set internal-contest --budget 2700 --workers 8
+#   -> data/output/internal-contest/submission/<run_id>/<graph>.json   (one best VALID layout per graph)
+#      data/output/internal-contest/bests.json                          (best-k metadata)
+./bin/contest_orchestrate --self-test         # pure-logic checks, no solver
 ```
 
 Validated: on a 420 s budget it finishes in 381 s with a valid layout for all 9
-graphs (see [results/exp-2026-06-30-reheat-sharing.md](results/exp-2026-06-30-reheat-sharing.md)).
+graphs (see [data/output/exp-2026-06-30-reheat-sharing.md](data/output/exp-2026-06-30-reheat-sharing.md)).
 Use a fresh `--out-dir` per contest so `bests.json` starts clean.
 
-Point it at any folder of graphs (submissions keep the original file names):
+Point it at any folder of graphs, e.g. one not listed under `data/input/`
+(submissions keep the original file names):
 
 ```bash
-python3 contest_orchestrate.py --graphs-dir /path/to/graphs --budget 2700 --workers 8
+./bin/contest_orchestrate --graphs-dir /path/to/graphs --budget 2700 --workers 8
 ```
 
-**In the server UI** (`python3 server.py`): the Run Control panel has a
-**Batch / Orchestrator** toggle. In Orchestrator mode, type/paste the graph folder,
-click **Scan** to preview the graphs found, then **Scan & Run** to auto-start the
-orchestrator; live log + a per-graph k/leases/valid table stream while it runs.
+**In the web UI** (`./bin/server`): pick the Orchestrator tab, pick an input
+set from the dropdown (or an explicit graphs folder), set budget and workers,
+then Start; the log tail and `bests.json` table update on every 3 s poll.
 
 ---
 
