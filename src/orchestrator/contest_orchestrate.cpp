@@ -106,7 +106,8 @@ public:
                         double denseDens, std::optional<double> quantumOverride,
                         const std::string& only = "")
         : budget_(budget), W_(workers), seed_(seed), xchg_(xchgRounds), half_(halfShare),
-          denseDens_(denseDens), qOverride_(quantumOverride), outRoot_(outDir) {
+          denseDens_(denseDens), qOverride_(quantumOverride), outRoot_(outDir),
+          label_(pathBasename(graphsDir)) {
         runId_ = "corch_" + std::to_string((long long)time(nullptr));
         runDir_ = outRoot_ + "/runs/" + runId_;
         mkdirs(runDir_);
@@ -132,6 +133,7 @@ private:
     // config
     double budget_; int W_; long long seed_; int xchg_; bool half_; double denseDens_;
     std::optional<double> qOverride_; std::string outRoot_;
+    std::string label_; // input-set / graphs-dir name, prefixed onto bests.json keys
     std::string runId_, runDir_;
     mjson::Value bests_;
     bool noGraphviz_ = false;
@@ -229,6 +231,9 @@ private:
         g.leases += 1;
         maxOverrun_ = std::max(maxOverrun_, wall - q);
         absorb(nm, g, bestW, method, wall, q);
+
+        std::string kStr = g.bestK.has_value() ? std::to_string(*g.bestK) : "None";
+        log(std::string(buf) + " k=" + kStr);
         return true;
     }
 
@@ -258,8 +263,12 @@ private:
                        ? (ox - nx.value()) / ox : 0.0;
             g.bestK = nk; g.bestX = nx; g.warm = bestW->outPath;
             g.stalls = 0;
-            updateBest(outRoot_, bests_, nm, method, nk, nx, bestW->outPath, runId_,
-                      std::nullopt, W_, std::round(wall * 10.0) / 10.0);
+            // bests.json keys are qualified as "<input-set>/<graph>__<method>" so
+            // entries stay unambiguous once viewed alongside other sets in the GUI;
+            // submission files/dirs (nm alone) are untouched - contest format.
+            std::string qname = label_.empty() ? nm : (label_ + "/" + nm);
+            updateBest(outRoot_, bests_, qname, method, nk, nx, bestW->outPath, runId_,
+                      std::nullopt, W_, std::round(wall * 10.0) / 10.0, g.n, g.m);
         } else {
             g.lastDk = 0.0; g.lastDxf = 0.0;
             g.stalls++;

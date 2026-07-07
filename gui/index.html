@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>GD-2025 / K-PLANARITY</title>
+        <link rel="stylesheet" href="/gui/style.css" />
+    </head>
+    <body>
+        <div class="wrap">
+            <header>
+                <div class="kicker">SAkGD — Contest Tooling</div>
+                <h1>GD-2025 / K-PLANARITY</h1>
+                <div class="meta">
+                    Control panel — polls <code>/api/status</code> every 3s
+                </div>
+            </header>
+
+            <nav class="modes">
+                <button data-mode="batch" onclick="setMode('batch')">
+                    Batch runner
+                </button>
+                <button
+                    class="active"
+                    data-mode="orchestrator"
+                    onclick="setMode('orchestrator')"
+                >
+                    Orchestrator
+                </button>
+            </nav>
+
+            <div class="panel-full">
+                <h2>Configure run</h2>
+
+                <div class="grid2">
+                    <div>
+                        <div class="field">
+                            <label>Input set</label>
+                            <select id="inputSet" onchange="loadGraphs()">
+                                <option value="">loading…</option>
+                            </select>
+                            <div class="graphlist" id="graphList"></div>
+                            <div class="graphlist-actions">
+                                <span class="gmeta" id="graphCount"></span>
+                                <button
+                                    type="button"
+                                    class="linkbtn"
+                                    onclick="uncheckAllGraphs()"
+                                >
+                                    Uncheck all
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div id="batchFields" style="display: none">
+                            <div class="field">
+                                <label>Methods</label>
+                                <div class="chips" id="methodChips"></div>
+                            </div>
+                            <div class="row3">
+                                <div class="field">
+                                    <label>Workers</label
+                                    ><input
+                                        id="workers"
+                                        type="number"
+                                        value="4"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Seed</label
+                                    ><input
+                                        id="seed"
+                                        type="number"
+                                        value="42"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Out dir (blank = auto)</label
+                                    ><input
+                                        id="outDir"
+                                        type="text"
+                                        placeholder="data/output/&lt;set&gt;"
+                                    />
+                                </div>
+                            </div>
+                            <div class="row3">
+                                <div class="field">
+                                    <label>Min · small</label
+                                    ><input
+                                        id="minSmall"
+                                        type="number"
+                                        value="5"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Min · medium</label
+                                    ><input
+                                        id="minMedium"
+                                        type="number"
+                                        value="8"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Min · large</label
+                                    ><input
+                                        id="minLarge"
+                                        type="number"
+                                        value="15"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="orchFields">
+                            <div class="field">
+                                <label
+                                    >Explicit graphs folder (overrides input
+                                    set)</label
+                                >
+                                <input
+                                    id="oGraphsDir"
+                                    type="text"
+                                    placeholder="/path/to/graphs"
+                                />
+                            </div>
+                            <div class="row3">
+                                <div class="field">
+                                    <label>Workers</label
+                                    ><input
+                                        id="oWorkers"
+                                        type="number"
+                                        value="8"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Budget (sec)</label
+                                    ><input
+                                        id="oBudget"
+                                        type="number"
+                                        value="2700"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Seed</label
+                                    ><input
+                                        id="oSeed"
+                                        type="number"
+                                        value="1"
+                                    />
+                                </div>
+                            </div>
+                            <div class="field">
+                                <label>Out dir (blank = auto)</label
+                                ><input
+                                    id="oOutDir"
+                                    type="text"
+                                    placeholder="data/output/&lt;set&gt;"
+                                />
+                            </div>
+                        </div>
+
+                        <div class="btnrow">
+                            <button
+                                class="action"
+                                id="startBtn"
+                                onclick="start()"
+                            >
+                                ▸ Start
+                            </button>
+                            <button
+                                class="action stop"
+                                id="stopBtn"
+                                onclick="stop()"
+                                disabled
+                            >
+                                ■ Stop
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <section class="logsection">
+                <h2>Log</h2>
+                <div class="statusline">
+                    <span class="dot" id="dot"></span>
+                    <span class="statuslabel" id="statusText">Idle</span>
+                    <span class="statusmeta" id="elapsed"></span>
+                </div>
+                <pre id="log">(no output yet)</pre>
+            </section>
+
+            <section class="results">
+                <h2>
+                    Best results <span class="count" id="bestsCount"></span>
+                </h2>
+                <table id="bestsTable">
+                    <thead>
+                        <tr>
+                            <th>graph</th>
+                            <th>method</th>
+                            <th class="num">k</th>
+                            <th class="num">total_x</th>
+                            <th class="num">nodes_edges</th>
+                            <th class="num">time_spent</th>
+                            <th class="num">worker_count</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="empty-row">
+                            <td colspan="7">no results yet</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="results">
+                <h2>Full report <span class="count" id="reportMeta"></span></h2>
+                <div class="tbl-scroll">
+                    <table id="reportTable">
+                        <thead>
+                            <tr id="reportThead">
+                                <th>graph</th>
+                                <th class="num">nodes_edges</th>
+                            </tr>
+                        </thead>
+                        <tbody id="reportTbody">
+                            <tr class="empty-row">
+                                <td colspan="3">no results yet</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <footer>
+                <span>bin/server</span>
+                <span id="clock"></span>
+            </footer>
+        </div>
+        <script>
+            let mode = "orchestrator"
+            let methodsAvailable = []
+            let selectedMethods = new Set(["sa", "sa-stress"])
+            let graphsAvailable = []
+            let selectedGraphs = new Set()
+
+            function setMode(m) {
+                mode = m
+                document
+                    .querySelectorAll("nav.modes button")
+                    .forEach((b) =>
+                        b.classList.toggle("active", b.dataset.mode === m)
+                    )
+                document.getElementById("batchFields").style.display =
+                    m === "batch" ? "block" : "none"
+                document.getElementById("orchFields").style.display =
+                    m === "orchestrator" ? "block" : "none"
+            }
+
+            async function loadInputSets() {
+                try {
+                    const r = await fetch("/api/input-sets")
+                    const sets = await r.json()
+                    const sel = document.getElementById("inputSet")
+                    sel.innerHTML = sets.length
+                        ? sets
+                              .map(
+                                  (s) =>
+                                      `<option value="${s.name}">${s.name} (${s.count})</option>`
+                              )
+                              .join("")
+                        : '<option value="">none found under data/input/</option>'
+                } catch (e) {
+                    /* keep the loading placeholder */
+                }
+                loadGraphs()
+            }
+
+            async function loadGraphs() {
+                const name = document.getElementById("inputSet").value
+                graphsAvailable = []
+                selectedGraphs = new Set()
+                if (name) {
+                    try {
+                        const r = await fetch(
+                            "/api/graphs?input_set=" + encodeURIComponent(name)
+                        )
+                        graphsAvailable = await r.json()
+                        selectedGraphs = new Set(
+                            graphsAvailable.map((g) => g.name)
+                        ) // all checked by default
+                    } catch (e) {
+                        /* ignore */
+                    }
+                }
+                renderGraphList()
+                loadReport()
+            }
+
+            async function loadReport() {
+                const name = document.getElementById("inputSet").value
+                try {
+                    const r = await fetch(
+                        "/api/report" +
+                            (name
+                                ? "?input_set=" + encodeURIComponent(name)
+                                : "")
+                    )
+                    renderReportTable(await r.json())
+                } catch (e) {
+                    /* server briefly unreachable; ignore */
+                }
+            }
+
+            function renderReportTable(data) {
+                const methods = data.methods || []
+                const graphs = data.graphs || []
+                document.getElementById("reportMeta").textContent = data.meta
+                    ? "— " + data.meta
+                    : ""
+
+                const thead = document.getElementById("reportThead")
+                thead.innerHTML =
+                    '<th>graph</th><th class="num">nodes_edges</th>' +
+                    methods
+                        .map(
+                            (m) =>
+                                `<th class="num">${m} k</th><th class="num">${m} total_x</th>` +
+                                `<th class="num">${m} init_k</th><th class="num">${m} time_spent</th><th class="num">${m} worker_count</th>`
+                        )
+                        .join("")
+
+                const tbody = document.getElementById("reportTbody")
+                if (!graphs.length) {
+                    tbody.innerHTML = `<tr class="empty-row"><td colspan="${
+                        2 + methods.length * 5
+                    }">no results yet</td></tr>`
+                    return
+                }
+                tbody.innerHTML = graphs
+                    .map((g) => {
+                        let row = `<tr><td>${g.graph}</td><td class="num">${g.nodes} & ${g.edges}</td>`
+                        for (const m of methods) {
+                            const c = (g.results && g.results[m]) || {}
+                            const isBest =
+                                c.k != null &&
+                                g.best_k != null &&
+                                c.k === g.best_k
+                            row +=
+                                `<td class="num${isBest ? " best" : ""}">${
+                                    c.k ?? "—"
+                                }</td>` +
+                                `<td class="num">${c.totalX ?? "—"}</td>` +
+                                `<td class="num">${c.initK ?? "—"}</td>` +
+                                `<td class="num">${c.sec ?? "—"}</td>` +
+                                `<td class="num">${c.workers ?? "—"}</td>`
+                        }
+                        return row + "</tr>"
+                    })
+                    .join("")
+            }
+
+            function renderGraphList() {
+                document.getElementById("graphList").innerHTML = graphsAvailable
+                    .map(
+                        (g) => `
+    <label>
+      <input type="checkbox" ${
+          selectedGraphs.has(g.name) ? "checked" : ""
+      } onchange="toggleGraph('${g.name}')">
+      <span class="gname">${g.name}</span>
+      <span class="gmeta">n=${g.n} m=${g.m}</span>
+    </label>`
+                    )
+                    .join("")
+                document.getElementById("graphCount").textContent =
+                    graphsAvailable.length
+                        ? selectedGraphs.size +
+                          " / " +
+                          graphsAvailable.length +
+                          " selected"
+                        : ""
+            }
+
+            function toggleGraph(name) {
+                if (selectedGraphs.has(name)) selectedGraphs.delete(name)
+                else selectedGraphs.add(name)
+                renderGraphList()
+            }
+
+            function uncheckAllGraphs() {
+                selectedGraphs.clear()
+                renderGraphList()
+            }
+
+            async function loadMethods() {
+                try {
+                    const r = await fetch("/api/methods")
+                    methodsAvailable = await r.json()
+                    renderChips()
+                } catch (e) {
+                    /* ignore */
+                }
+            }
+
+            function renderChips() {
+                document.getElementById("methodChips").innerHTML =
+                    methodsAvailable
+                        .map(
+                            (m) =>
+                                `<div class="chip ${
+                                    selectedMethods.has(m.id) ? "on" : ""
+                                }" onclick="toggleMethod('${m.id}')">${
+                                    m.id
+                                }</div>`
+                        )
+                        .join("")
+            }
+
+            function toggleMethod(id) {
+                if (selectedMethods.has(id)) selectedMethods.delete(id)
+                else selectedMethods.add(id)
+                renderChips()
+            }
+
+            async function start() {
+                const cfg = {
+                    mode,
+                    input_set: document.getElementById("inputSet").value,
+                }
+                if (mode === "batch") {
+                    if (!selectedMethods.size) {
+                        alert("Pick at least one method.")
+                        return
+                    }
+                    Object.assign(cfg, {
+                        out_dir: document.getElementById("outDir").value,
+                        methods: [...selectedMethods].join(","),
+                        workers: +document.getElementById("workers").value,
+                        seed: +document.getElementById("seed").value,
+                        minutes_small:
+                            +document.getElementById("minSmall").value,
+                        minutes_medium:
+                            +document.getElementById("minMedium").value,
+                        minutes_large:
+                            +document.getElementById("minLarge").value,
+                    })
+                } else {
+                    Object.assign(cfg, {
+                        out_dir: document.getElementById("oOutDir").value,
+                        graphs_dir: document.getElementById("oGraphsDir").value,
+                        workers: +document.getElementById("oWorkers").value,
+                        budget_sec: +document.getElementById("oBudget").value,
+                        seed: +document.getElementById("oSeed").value,
+                    })
+                }
+                if (!cfg.input_set && !cfg.graphs_dir) {
+                    alert("Pick an input set (or an explicit graphs folder).")
+                    return
+                }
+                if (
+                    cfg.input_set &&
+                    !cfg.graphs_dir &&
+                    graphsAvailable.length
+                ) {
+                    if (!selectedGraphs.size) {
+                        alert("Select at least one graph to run.")
+                        return
+                    }
+                    if (selectedGraphs.size < graphsAvailable.length)
+                        cfg.only = [...selectedGraphs].join(",")
+                }
+                const r = await fetch("/api/start", {
+                    method: "POST",
+                    body: JSON.stringify(cfg),
+                })
+                const j = await r.json()
+                if (j.error) alert(j.error)
+                poll()
+            }
+
+            async function stop() {
+                await fetch("/api/stop", { method: "POST" })
+                poll()
+            }
+
+            function fmtDuration(sec) {
+                sec = Math.round(sec)
+                const h = Math.floor(sec / 3600),
+                    m = Math.floor((sec % 3600) / 60),
+                    s = sec % 60
+                return h
+                    ? `${h}h${String(m).padStart(2, "0")}m`
+                    : m
+                    ? `${m}m${String(s).padStart(2, "0")}s`
+                    : `${s}s`
+            }
+
+            async function poll() {
+                try {
+                    const r = await fetch("/api/status")
+                    const s = await r.json()
+                    document
+                        .getElementById("dot")
+                        .classList.toggle("on", !!s.running)
+                    document.getElementById("statusText").textContent =
+                        s.running ? "Running · " + s.mode : "Idle"
+                    let elapsedText = s.elapsed_sec
+                        ? fmtDuration(s.elapsed_sec) + " elapsed"
+                        : ""
+                    if (s.elapsed_sec && s.remaining_sec != null)
+                        elapsedText +=
+                            " · ~" + fmtDuration(s.remaining_sec) + " left"
+                    document.getElementById("elapsed").textContent = elapsedText
+                    document.getElementById("startBtn").disabled = !!s.running
+                    document.getElementById("stopBtn").disabled = !s.running
+                    document.getElementById("log").textContent =
+                        s.log_tail || "(no output yet)"
+
+                    const tbody = document.querySelector("#bestsTable tbody")
+                    const entries = s.bests ? Object.entries(s.bests) : []
+                    document.getElementById("bestsCount").textContent =
+                        entries.length ? "— " + entries.length + " entries" : ""
+                    if (!entries.length) {
+                        tbody.innerHTML =
+                            '<tr class="empty-row"><td colspan="7">no results yet</td></tr>'
+                    } else {
+                        const rows = entries
+                            .map(([key, v]) => {
+                                const idx = key.lastIndexOf("__")
+                                return {
+                                    graph: key.slice(0, idx),
+                                    method: key.slice(idx + 2),
+                                    k: v.k,
+                                    totalX: v.totalX,
+                                    nodes: v.nodes,
+                                    edges: v.edges,
+                                    timeSpent: v.wall_clock_sec,
+                                    workers: v.n_workers,
+                                }
+                            })
+                            .sort(
+                                (a, b) =>
+                                    a.graph.localeCompare(b.graph) ||
+                                    a.method.localeCompare(b.method)
+                            )
+                        const bestByGraph = {}
+                        for (const row of rows) {
+                            if (row.k == null) continue
+                            if (
+                                !(row.graph in bestByGraph) ||
+                                row.k < bestByGraph[row.graph]
+                            )
+                                bestByGraph[row.graph] = row.k
+                        }
+                        tbody.innerHTML = rows
+                            .map((row) => {
+                                const isBest =
+                                    row.k != null &&
+                                    row.k === bestByGraph[row.graph]
+                                return (
+                                    `<tr><td>${row.graph}</td><td>${row.method}</td>` +
+                                    `<td class="num${isBest ? " best" : ""}">${
+                                        row.k ?? "—"
+                                    }</td><td class="num">${
+                                        row.totalX ?? "—"
+                                    }</td><td class="num">${
+                                        row.nodes ?? "—"
+                                    } & ${
+                                        row.edges ?? "—"
+                                    }</td><td class="num">${
+                                        row.timeSpent ?? "—"
+                                    }</td><td class="num">${
+                                        row.workers ?? "—"
+                                    }</td></tr>`
+                                )
+                            })
+                            .join("")
+                    }
+                } catch (e) {
+                    /* server briefly unreachable between polls; ignore */
+                }
+                loadReport()
+            }
+
+            function tickClock() {
+                document.getElementById("clock").textContent =
+                    new Date().toISOString().slice(0, 19).replace("T", " ") +
+                    " UTC"
+            }
+            setInterval(tickClock, 1000)
+            tickClock()
+
+            loadInputSets()
+            loadMethods()
+            poll()
+            setInterval(poll, 3000)
+        </script>
+    </body>
+</html>

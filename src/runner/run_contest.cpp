@@ -4,12 +4,10 @@
 // Methods : sa, sa-warm, sa-stress, staged, staged-adaptive, ils
 // Workers : W parallel workers per (graph x method) combo, different seeds
 // Timing  : group-based - small graphs get less budget, large graphs more
-// Logging : detailed per-combo JSON + a plain results/report.html table,
-//           regenerated after every combo. (The Python original also
-//           generated an elaborate Chart.js report with live per-worker
-//           status badges and per-run convergence charts; that's dropped
-//           here in favor of the basic polling web dashboard in
-//           src/server, which reads solver status/log files directly.)
+// Logging : detailed per-combo JSON (bests.json/history.json/summary.csv/md)
+//           under data/output/<set>/. No HTML is written here - the GUI
+//           lives solely under gui/, rendered on demand by bin/server's
+//           /report route from whichever set's JSON you ask for.
 //
 // Usage:
 //   run_contest                                          # prompts: which input set?
@@ -27,6 +25,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace engine;
@@ -142,10 +141,12 @@ void writeMd(const std::vector<mjson::Value>& combos, const std::string& path,
     f << out.str();
 }
 
-// Plain (no-JS) status table, regenerated after every combo. The live
-// polling web dashboard (src/server) is the primary place to watch a run;
-// this is a static fallback that also works with `file://`.
-void writeSimpleReport(const std::string& outRoot, const mjson::Value& history, const mjson::Value& bests) {
+// Plain stdout summary. HTML/GUI rendering is not this binary's job at
+// all any more - bin/server renders every input set's report on demand
+// from bests.json/history.json (see src/server/server.cpp's renderReport
+// + gui/report.html), so no HTML file ever gets written under
+// data/output/<set>/. This is just a quick CLI-only glance.
+void printReportSummary(const mjson::Value& history, const mjson::Value& bests) {
     std::map<std::pair<std::string,std::string>, mjson::Value> bestResults;
     if (bests.isObj()) {
         for (auto& [key, val] : bests.asObject()) {
@@ -155,14 +156,12 @@ void writeSimpleReport(const std::string& outRoot, const mjson::Value& history, 
         }
     }
     std::set<std::string> allGraphs, allMethods;
-    std::map<std::string, std::pair<long long,long long>> graphMeta;
     if (history.has("runs")) {
         for (auto& run : history.at("runs").asArray()) {
             if (!run.has("combos")) continue;
             for (auto& c : run.at("combos").asArray()) {
                 allGraphs.insert(c.at("graph").asString());
                 allMethods.insert(c.at("method").asString());
-                if (c.has("nodes")) graphMeta[c.at("graph").asString()] = {c.at("nodes").asLL(), c.at("edges").asLL()};
             }
         }
     }
@@ -170,70 +169,20 @@ void writeSimpleReport(const std::string& outRoot, const mjson::Value& history, 
     std::sort(graphs.begin(), graphs.end(), [](auto& a, auto& b) { return a.size() != b.size() ? a.size() < b.size() : a < b; });
     std::vector<std::string> methods(allMethods.begin(), allMethods.end());
 
-    size_t nRuns = history.has("runs") ? history.at("runs").asArray().size() : 0;
-
-    std::ostringstream html;
-    html <<
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>GD-2025 / K-PLANARITY — Report</title><style>\n"
-        ":root{--bg:#ffffff;--fg:#111111;--muted:#6a6a6a;--line:#111111;--line-soft:#d6d6d6;--blue:#0065bd;\n"
-        "  --mono:ui-monospace,\"SF Mono\",\"JetBrains Mono\",\"Fira Code\",Menlo,Consolas,\"Liberation Mono\",monospace;}\n"
-        "*{box-sizing:border-box}html,body{margin:0;padding:0}\n"
-        "body{background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:13px;line-height:1.55}\n"
-        ".wrap{max-width:1100px;margin:0 auto;padding:0 32px 40px}\n"
-        "header{border-bottom:3px solid var(--fg);padding:26px 0 16px}\n"
-        ".kicker{font-size:11px;letter-spacing:.14em;color:var(--blue);font-weight:700;text-transform:uppercase;margin-bottom:6px}\n"
-        "header h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.01em}\n"
-        "header .meta{margin-top:8px;color:var(--muted);font-size:12px}\n"
-        "section{padding:24px 0}\n"
-        "h2{font-size:11px;text-transform:uppercase;letter-spacing:.12em;font-weight:700;color:var(--muted);\n"
-        "   margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}\n"
-        ".tbl-scroll{overflow-x:auto}\n"
-        "table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:max-content}\n"
-        "thead th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);\n"
-        "         border-bottom:1px solid var(--fg);padding:7px 10px 8px;font-weight:700;white-space:nowrap}\n"
-        "tbody td{padding:7px 10px;border-bottom:1px solid var(--line-soft);white-space:nowrap}\n"
-        "tbody tr:hover td{background:#f6f8fb}\n"
-        "th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}\n"
-        "td.best{color:var(--blue);font-weight:700}\n"
-        "td:first-child,th:first-child{position:sticky;left:0;background:var(--bg)}\n"
-        "tbody tr:hover td:first-child{background:#f6f8fb}\n"
-        "</style></head><body><div class=\"wrap\">\n"
-        "<header><div class=\"kicker\">SAkGD — Contest Tooling</div><h1>GD-2025 / K-PLANARITY</h1>"
-        "<div class=\"meta\">" << graphs.size() << " graphs · " << nRuns << " runs · static report, no JS</div></header>\n"
-        "<section><h2>Best results</h2><div class=\"tbl-scroll\"><table><thead><tr>"
-        "<th>Graph</th><th class=\"num\">Nodes</th><th class=\"num\">Edges</th>";
-    for (auto& m : methods) html << "<th class=\"num\">" << m << " k</th><th class=\"num\">" << m << " totalX</th>";
-    html << "</tr></thead><tbody>";
+    printf("%-18s", "graph");
+    for (auto& m : methods) printf("%14s", m.c_str());
+    printf("\n");
     for (auto& g : graphs) {
-        auto meta = graphMeta.count(g) ? graphMeta[g] : std::make_pair(0LL, 0LL);
-        html << "<tr><td>" << g << "</td><td class=\"num\">" << meta.first << "</td><td class=\"num\">" << meta.second << "</td>";
-        std::optional<long long> best;
+        printf("%-18s", g.c_str());
         for (auto& m : methods) {
             auto it = bestResults.find({g, m});
-            if (it != bestResults.end() && it->second.has("k") && !it->second.at("k").isNull()) {
-                long long k = it->second.at("k").asLL();
-                if (!best.has_value() || k < *best) best = k;
-            }
+            if (it == bestResults.end() || !it->second.has("k") || it->second.at("k").isNull()) printf("%14s", "-");
+            else printf("%14lld", it->second.at("k").asLL());
         }
-        for (auto& m : methods) {
-            auto it = bestResults.find({g, m});
-            if (it == bestResults.end() || !it->second.has("k") || it->second.at("k").isNull()) {
-                html << "<td class=\"num\">\xe2\x80\x94</td><td class=\"num\">\xe2\x80\x94</td>";
-                continue;
-            }
-            long long k = it->second.at("k").asLL();
-            std::string tx = it->second.has("totalX") && !it->second.at("totalX").isNull()
-                             ? std::to_string(it->second.at("totalX").asLL()) : "\xe2\x80\x94";
-            bool isBest = best.has_value() && k == *best;
-            html << "<td class=\"num" << (isBest ? " best" : "") << "\">" << k << "</td><td class=\"num\">" << tx << "</td>";
-        }
-        html << "</tr>";
+        printf("\n");
     }
-    html << "</tbody></table></div></section></div></body></html>";
-    std::ofstream f(outRoot + "/report.html");
-    f << html.str();
+    printf("\nFull report (sec/workers/init-k, always-current): "
+           "run ./bin/server and open /report?input_set=<name>\n");
 }
 
 struct Args {
@@ -318,7 +267,7 @@ int main(int argc, char** argv) {
         emptyHistory["runs"] = mjson::Value::makeArray();
         mjson::Value history = loadJsonDefault(outRoot + "/history.json", emptyHistory);
         mjson::Value bests = loadJsonDefault(outRoot + "/bests.json", mjson::Value::makeObject());
-        writeSimpleReport(outRoot, history, bests);
+        printReportSummary(history, bests);
         return 0;
     }
 
@@ -339,6 +288,11 @@ int main(int argc, char** argv) {
         fprintf(stderr, "run_contest: %s\n", e.what());
         return 2;
     }
+
+    // Qualifies every bests.json/history.json "graph" identifier as
+    // "<label>/<graph>" so entries stay unambiguous (matches whatever
+    // input set / graphs-dir this run pulled the graphs from).
+    std::string label = pathBasename(graphsDir);
 
     // Nest output under data/output/<input-set-name> by default (mirrors
     // data/input/<set>/) so different sets never collide on graph names.
@@ -363,7 +317,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "run_contest: no graphs found in %s\n", graphsDir.c_str());
         return 1;
     }
-    writeSimpleReport(outRoot, history, bests);
 
     std::string runId = nowTimestamp();
     std::string runDir = outRoot + "/runs/" + runId;
@@ -384,7 +337,7 @@ int main(int argc, char** argv) {
 
     for (auto& entry : graphEntries) {
         const std::string& gpathOrig = entry.path;
-        const std::string& gname = entry.name;
+        std::string gname = label.empty() ? entry.name : (label + "/" + entry.name);
         gnames.push_back(gname);
         int n = entry.n, m = entry.m;
         double budget = budgetForSize(n, m, minutesMap);
@@ -424,7 +377,8 @@ int main(int argc, char** argv) {
                 improv = std::round((*baselineK - *bestK) / (double)*baselineK * 1000.0) / 10.0;
 
             bool newBest = updateBest(outRoot, bests, gname, method, bestK, bestTx, bestOut, runId,
-                                      budget, args.workers, std::round(combo.wallTotal * 10.0) / 10.0);
+                                      budget, args.workers, std::round(combo.wallTotal * 10.0) / 10.0,
+                                      n, m);
 
             std::string improvStr;
             if (improv.has_value()) {
@@ -485,7 +439,6 @@ int main(int argc, char** argv) {
             }
             saveJson(outRoot + "/history.json", h2);
             history = h2;
-            writeSimpleReport(outRoot, history, bests);
         }
         printf("\n");
     }
@@ -508,6 +461,6 @@ int main(int argc, char** argv) {
     saveJson(runDir + "/detailed.json", detail);
 
     printf("[done] %s\n", runDir.c_str());
-    printf("[done] open %s/report.html in a browser\n", outRoot.c_str());
+    printReportSummary(history, bests);
     return 0;
 }

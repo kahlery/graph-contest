@@ -40,7 +40,6 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 using namespace std;
@@ -540,6 +539,36 @@ public:
 // ====================================================================
 // SAkGD solver
 // ====================================================================
+
+// Flat, allocation-free replacement for unordered_set<int>, used for the
+// per-edge crossing sets (xs) and the small per-move scratch sets in
+// planMove(). These stay small in practice (post-smoothing initial layouts
+// average single/low-double-digit crossings per edge, and SA drives that
+// down further), so a linear scan over a contiguous vector avoids the
+// per-insert/erase heap-node churn and cache-missing pointer chasing that
+// unordered_set incurs for sets this size - it's the same "small vector"
+// tradeoff libraries like boost::flat_set are built on.
+struct SmallIntSet {
+    vector<int> v;
+    bool contains(int x) const {
+        for (int y : v) if (y == x) return true;
+        return false;
+    }
+    size_t count(int x) const { return contains(x) ? 1 : 0; }
+    void insert(int x) {
+        if (!contains(x)) v.push_back(x);
+    }
+    void erase(int x) {
+        for (size_t i = 0; i < v.size(); i++) {
+            if (v[i] == x) { v[i] = v.back(); v.pop_back(); return; }
+        }
+    }
+    size_t size() const { return v.size(); }
+    void clear() { v.clear(); }
+    vector<int>::const_iterator begin() const { return v.begin(); }
+    vector<int>::const_iterator end()   const { return v.end(); }
+};
+
 struct MovePlan {
     int  v;
     Pt   oldPos, newPos;
@@ -562,7 +591,7 @@ public:
     vector<vector<int>>  nodeEdges;
 
     // For each edge: the set of edges it crosses (bidirectional).
-    vector<unordered_set<int>> xs;
+    vector<SmallIntSet> xs;
     vector<int>                xc;
     vector<int>                cntPerK;        // cntPerK[k] = #edges with xc==k
     int                        kVal    = 0;
@@ -1451,7 +1480,7 @@ public:
 
         // New crossings of each incident edge.
         // We re-use the grid's mark array (per query).
-        vector<unordered_set<int>> newXsI(incidents.size());
+        vector<SmallIntSet> newXsI(incidents.size());
 
         for (size_t k = 0; k < incidents.size(); k++) {
             int  i  = incidents[k];
@@ -1498,7 +1527,7 @@ public:
         // Build edgeCounts and newLocalK.
         // newLocalK should also include the (possibly updated) counts of all
         // involved edges (incident + their old crossings).
-        unordered_set<int> involvedSet;
+        SmallIntSet involvedSet;
         for (int i : incidents) {
             involvedSet.insert(i);
             for (int e2 : xs[i]) involvedSet.insert(e2);

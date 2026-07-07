@@ -585,7 +585,9 @@ inline bool updateBest(const std::string& outRoot, mjson::Value& bests,
                         const std::string& layoutPath, const std::string& runId,
                         std::optional<double> budgetMin = std::nullopt,
                         std::optional<int> nWorkers = std::nullopt,
-                        std::optional<double> wallClockSec = std::nullopt) {
+                        std::optional<double> wallClockSec = std::nullopt,
+                        std::optional<int> nodes = std::nullopt,
+                        std::optional<int> edges = std::nullopt) {
     if (!k.has_value()) return false;
     std::string key = bestKey(graph, method);
     bool better = true;
@@ -612,6 +614,8 @@ inline bool updateBest(const std::string& outRoot, mjson::Value& bests,
     entry["budget_min"] = budgetMin.has_value() ? mjson::Value(*budgetMin) : mjson::Value();
     entry["n_workers"] = nWorkers.has_value() ? mjson::Value(*nWorkers) : mjson::Value();
     entry["wall_clock_sec"] = wallClockSec.has_value() ? mjson::Value(*wallClockSec) : mjson::Value();
+    entry["nodes"] = nodes.has_value() ? mjson::Value((long long)*nodes) : mjson::Value();
+    entry["edges"] = edges.has_value() ? mjson::Value((long long)*edges) : mjson::Value();
     bests[key] = entry;
     return true;
 }

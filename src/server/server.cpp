@@ -19,9 +19,12 @@
 #include <fstream>
 #include <mutex>
 #include <netinet/in.h>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
+#include <tuple>
 #include <unistd.h>
 #include <vector>
 
@@ -95,6 +98,7 @@ struct RunState {
     std::string outDir;
     std::string logPath;
     std::chrono::steady_clock::time_point startedAt;
+    double estTotalSec = 0; // 0 = unknown; see apiStart's estimate for each mode
     std::unique_ptr<proc::Child> child;
 };
 RunState g_run;
@@ -128,6 +132,9 @@ mjson::Value apiStatus() {
                     ? std::chrono::duration<double>(std::chrono::steady_clock::now() - g_run.startedAt).count()
                     : 0.0;
     v["elapsed_sec"] = g_run.mode.empty() ? mjson::Value() : mjson::Value(std::round(elapsed * 10.0) / 10.0);
+    v["remaining_sec"] = (!g_run.mode.empty() && g_run.estTotalSec > 0)
+                        ? mjson::Value(std::round(std::max(0.0, g_run.estTotalSec - elapsed) * 10.0) / 10.0)
+                        : mjson::Value();
     v["log_tail"] = g_run.logPath.empty() ? "" : tailFile(g_run.logPath);
     g_run.running = running;
 
@@ -209,9 +216,13 @@ mjson::Value apiStart(const mjson::Value& cfg) {
     std::string logPath = outDir + "/server_run.log";
 
     std::vector<std::string> args;
+    double estTotalSec = 0;
     if (mode == "orchestrator") {
+        // The orchestrator is designed to never overrun this budget, so it
+        // doubles as our total-wall-clock estimate for "time left".
+        double budgetSec = cfg.getDouble("budget_sec", 2700.0);
         args = {ROOT() + "/bin/contest_orchestrate",
-                "--budget", std::to_string(cfg.getDouble("budget_sec", 2700.0)),
+                "--budget", std::to_string(budgetSec),
                 "--workers", std::to_string((long long)cfg.getLL("workers", 8)),
                 "--out-dir", outDir,
                 "--seed", std::to_string((long long)cfg.getLL("seed", 1))};
@@ -220,17 +231,40 @@ mjson::Value apiStart(const mjson::Value& cfg) {
             args.push_back("--input-set"); args.push_back(inputSetField);
             if (!only.empty()) { args.push_back("--only"); args.push_back(only); }
         }
+        estTotalSec = budgetSec;
     } else {
+        std::string methodsField = cfg.getStr("methods", "sa,sa-stress");
+        double minutesSmall = cfg.getDouble("minutes_small", 5.0);
+        double minutesMedium = cfg.getDouble("minutes_medium", 8.0);
+        double minutesLarge = cfg.getDouble("minutes_large", 15.0);
         args = {ROOT() + "/bin/run_contest",
-                "--methods", cfg.getStr("methods", "sa,sa-stress"),
+                "--methods", methodsField,
                 "--input-set", inputSetField,
                 "--workers", std::to_string((long long)cfg.getLL("workers", 2)),
-                "--minutes-small", std::to_string(cfg.getDouble("minutes_small", 5.0)),
-                "--minutes-medium", std::to_string(cfg.getDouble("minutes_medium", 8.0)),
-                "--minutes-large", std::to_string(cfg.getDouble("minutes_large", 15.0)),
+                "--minutes-small", std::to_string(minutesSmall),
+                "--minutes-medium", std::to_string(minutesMedium),
+                "--minutes-large", std::to_string(minutesLarge),
                 "--seed", std::to_string((long long)cfg.getLL("seed", 42)),
                 "--out-dir", outDir};
         if (!only.empty()) { args.push_back("--only"); args.push_back(only); }
+
+        // Mirrors run_contest's own totalEst calc (sum of per-graph size
+        // budgets x method count) so /api/status can report time left.
+        try {
+            std::string gdir = !graphsDirField.empty() ? graphsDirField : inputSetDir(inputSetField);
+            auto entries = scanGraphDir(gdir);
+            if (!only.empty()) {
+                auto keep = splitCsv(only);
+                std::set<std::string> keepSet(keep.begin(), keep.end());
+                entries.erase(std::remove_if(entries.begin(), entries.end(),
+                              [&](auto& e) { return !keepSet.count(e.name); }), entries.end());
+            }
+            std::map<std::string,double> minutesMap = {
+                {"small", minutesSmall}, {"medium", minutesMedium}, {"large", minutesLarge}};
+            double totalMin = 0;
+            for (auto& e : entries) totalMin += budgetForSize(e.n, e.m, minutesMap);
+            estTotalSec = totalMin * 60.0 * (double)splitCsv(methodsField).size();
+        } catch (...) { estTotalSec = 0; }
     }
 
     try {
@@ -244,6 +278,7 @@ mjson::Value apiStart(const mjson::Value& cfg) {
     g_run.outDir = outDir;
     g_run.logPath = logPath;
     g_run.startedAt = std::chrono::steady_clock::now();
+    g_run.estTotalSec = estTotalSec;
     res["ok"] = true;
     return res;
 }
@@ -261,374 +296,124 @@ mjson::Value apiStop() {
     return res;
 }
 
-const char* INDEX_HTML = R"HTML(<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GD-2025 / K-PLANARITY</title>
-<style>
-:root {
-  --bg:#ffffff; --fg:#111111; --muted:#6a6a6a; --line:#111111; --line-soft:#d6d6d6;
-  --blue:#0065bd; --blue-dark:#003359;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, "Liberation Mono", monospace;
-}
-* { box-sizing:border-box; }
-html, body { margin:0; padding:0; }
-body { background:var(--bg); color:var(--fg); font-family:var(--mono); font-size:13px; line-height:1.55; }
-.wrap { max-width:1100px; margin:0 auto; padding:0 32px; }
-a { color:var(--blue); }
-
-header { border-bottom:3px solid var(--fg); padding:26px 0 16px; }
-.kicker { font-size:11px; letter-spacing:.14em; color:var(--blue); font-weight:700; text-transform:uppercase; margin-bottom:6px; }
-header h1 { margin:0; font-size:26px; font-weight:700; letter-spacing:-.01em; }
-header .meta { margin-top:8px; color:var(--muted); font-size:12px; }
-
-nav.modes { display:flex; border-bottom:1px solid var(--line); }
-nav.modes button {
-  font-family:var(--mono); font-size:11.5px; letter-spacing:.08em; text-transform:uppercase; font-weight:700;
-  background:none; border:none; border-right:1px solid var(--line); padding:12px 22px; cursor:pointer; color:var(--muted);
-}
-nav.modes button.active { color:#fff; background:var(--blue); }
-nav.modes button:hover:not(.active) { color:var(--fg); }
-
-.grid { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid var(--line); }
-.panel { padding:22px 0; }
-.panel:first-child { padding-right:28px; border-right:1px solid var(--line); }
-.panel:last-child { padding-left:28px; }
-
-h2 {
-  font-size:11px; text-transform:uppercase; letter-spacing:.12em; font-weight:700; color:var(--muted);
-  margin:0 0 16px; padding-bottom:8px; border-bottom:1px solid var(--line-soft);
+// --------------------------------------------------------------------- //
+// GUI: the control panel (gui/index.html) is a real file under gui/, not
+// an embedded string or per-output-set artifact. Its full-report section
+// is rendered client-side from GET /api/report, which is computed on
+// demand from a given input set's bests.json/history.json.
+// --------------------------------------------------------------------- //
+std::string readFileOr(const std::string& path, const std::string& fallback) {
+    try { return mjson::slurp(path); } catch (...) { return fallback; }
 }
 
-.field { margin-bottom:14px; }
-.field label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:4px; }
-.field input:not([type=checkbox]), .field select {
-  width:100%; font-family:var(--mono); font-size:13px; padding:7px 8px;
-  border:1px solid var(--fg); background:#fff; color:var(--fg); border-radius:0; appearance:none;
-}
-.field input:focus, .field select:focus { outline:2px solid var(--blue); outline-offset:-1px; }
-.row2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-.row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
-
-.chips { display:flex; flex-wrap:wrap; gap:6px; }
-.chip { border:1px solid var(--fg); padding:5px 10px; font-size:12px; cursor:pointer; user-select:none; }
-.chip.on { background:var(--blue); border-color:var(--blue); color:#fff; }
-.chip:hover:not(.on) { background:#f2f2f2; }
-
-.graphlist { border:1px solid var(--fg); margin-top:8px; max-height:170px; overflow-y:auto; }
-.graphlist label {
-  display:flex; align-items:center; gap:8px; padding:5px 8px; font-size:12px; cursor:pointer;
-  border-bottom:1px solid var(--line-soft);
-}
-.graphlist label:last-child { border-bottom:none; }
-.graphlist label:hover { background:#f6f8fb; }
-.graphlist input[type=checkbox] { width:auto; accent-color:var(--blue); margin:0; }
-.graphlist .gname { flex:1; }
-.graphlist .gmeta { color:var(--muted); font-size:10.5px; }
-.graphlist-actions { display:flex; justify-content:space-between; align-items:center; margin-top:6px; }
-.linkbtn {
-  background:none; border:none; font-family:var(--mono); font-size:11px; text-transform:uppercase;
-  letter-spacing:.05em; color:var(--blue); cursor:pointer; padding:0;
-}
-.linkbtn:hover { color:var(--blue-dark); }
-
-.btnrow { display:flex; gap:10px; margin-top:20px; }
-button.action {
-  font-family:var(--mono); font-weight:700; letter-spacing:.05em; text-transform:uppercase; font-size:12px;
-  padding:10px 22px; border:1px solid var(--fg); background:var(--fg); color:#fff; cursor:pointer; border-radius:0;
-}
-button.action.stop { background:#fff; color:var(--fg); }
-button.action:disabled { opacity:.35; cursor:not-allowed; }
-button.action:not(:disabled):hover { background:var(--blue); border-color:var(--blue); color:#fff; }
-
-.statusline { display:flex; align-items:center; gap:10px; font-size:13px; margin-bottom:14px; }
-.dot { width:9px; height:9px; display:inline-block; background:var(--muted); }
-.dot.on { background:var(--blue); }
-.statuslabel { font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
-.statusmeta { color:var(--muted); margin-left:auto; font-size:12px; }
-
-pre#log {
-  margin:0; background:#fff; color:var(--fg); border:1px solid var(--fg); padding:12px;
-  font-family:var(--mono); font-size:11.5px; line-height:1.5; max-height:320px; overflow:auto;
-  white-space:pre-wrap; word-break:break-all;
+std::string contentTypeFor(const std::string& path) {
+    auto endsWith = [&](const char* ext) {
+        size_t n = strlen(ext);
+        return path.size() >= n && path.compare(path.size() - n, n, ext) == 0;
+    };
+    if (endsWith(".css"))  return "text/css";
+    if (endsWith(".html")) return "text/html; charset=utf-8";
+    if (endsWith(".js"))   return "application/javascript";
+    if (endsWith(".json")) return "application/json";
+    return "application/octet-stream";
 }
 
-.results { padding:24px 0 40px; }
-.results h2 { display:flex; align-items:baseline; gap:8px; }
-.results h2 .count { color:var(--muted); font-weight:400; text-transform:none; letter-spacing:0; font-size:11px; }
-table { width:100%; border-collapse:collapse; font-size:12.5px; }
-thead th {
-  text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
-  border-bottom:1px solid var(--fg); padding:7px 10px 8px; font-weight:700;
-}
-tbody td { padding:7px 10px; border-bottom:1px solid var(--line-soft); }
-tbody tr:hover td { background:#f6f8fb; }
-th.num, td.num { text-align:right; font-variant-numeric:tabular-nums; }
-td.best { color:var(--blue); font-weight:700; }
-.empty-row td { color:var(--muted); font-style:normal; }
+// Builds the full-report JSON for one input set from its bests.json +
+// history.json (mirrors run_contest's console/CSV summary). Consumed by
+// gui/index.html, which renders it into the page's "Full report" table.
+mjson::Value apiReport(const std::string& setName) {
+    std::string outDir = !setName.empty() ? joinPath(ROOT(), "data/output/" + setName)
+                                           : joinPath(ROOT(), "data/output");
+    mjson::Value emptyHistory = mjson::Value::makeObject();
+    emptyHistory["runs"] = mjson::Value::makeArray();
+    mjson::Value history = loadJsonDefault(outDir + "/history.json", emptyHistory);
+    mjson::Value bests = loadJsonDefault(outDir + "/bests.json", mjson::Value::makeObject());
 
-footer { padding:18px 0 36px; color:var(--muted); font-size:11px; display:flex; justify-content:space-between; border-top:1px solid var(--line-soft); }
-</style>
-</head>
-<body>
-<div class="wrap">
-
-<header>
-  <div class="kicker">SAkGD — Contest Tooling</div>
-  <h1>GD-2025 / K-PLANARITY</h1>
-  <div class="meta">Control panel — polls <code>/api/status</code> every 3s · <a href="#" id="reportLink" target="_blank">full report ↗</a></div>
-</header>
-
-<nav class="modes">
-  <button class="active" data-mode="batch" onclick="setMode('batch')">Batch runner</button>
-  <button data-mode="orchestrator" onclick="setMode('orchestrator')">Orchestrator</button>
-</nav>
-
-<div class="grid">
-  <div class="panel">
-    <h2>Configure run</h2>
-
-    <div class="field">
-      <label>Input set</label>
-      <select id="inputSet" onchange="loadGraphs()"><option value="">loading…</option></select>
-      <div class="graphlist" id="graphList"></div>
-      <div class="graphlist-actions">
-        <span class="gmeta" id="graphCount"></span>
-        <button type="button" class="linkbtn" onclick="uncheckAllGraphs()">Uncheck all</button>
-      </div>
-    </div>
-
-    <div id="batchFields">
-      <div class="field">
-        <label>Methods</label>
-        <div class="chips" id="methodChips"></div>
-      </div>
-      <div class="row3">
-        <div class="field"><label>Workers</label><input id="workers" type="number" value="4"></div>
-        <div class="field"><label>Seed</label><input id="seed" type="number" value="42"></div>
-        <div class="field"><label>Out dir (blank = auto)</label><input id="outDir" type="text" placeholder="data/output/&lt;set&gt;"></div>
-      </div>
-      <div class="row3">
-        <div class="field"><label>Min · small</label><input id="minSmall" type="number" value="5"></div>
-        <div class="field"><label>Min · medium</label><input id="minMedium" type="number" value="8"></div>
-        <div class="field"><label>Min · large</label><input id="minLarge" type="number" value="15"></div>
-      </div>
-    </div>
-
-    <div id="orchFields" style="display:none">
-      <div class="field">
-        <label>Explicit graphs folder (overrides input set)</label>
-        <input id="oGraphsDir" type="text" placeholder="/path/to/graphs">
-      </div>
-      <div class="row3">
-        <div class="field"><label>Workers</label><input id="oWorkers" type="number" value="8"></div>
-        <div class="field"><label>Budget (sec)</label><input id="oBudget" type="number" value="2700"></div>
-        <div class="field"><label>Seed</label><input id="oSeed" type="number" value="1"></div>
-      </div>
-      <div class="field"><label>Out dir (blank = auto)</label><input id="oOutDir" type="text" placeholder="data/output/&lt;set&gt;"></div>
-    </div>
-
-    <div class="btnrow">
-      <button class="action" id="startBtn" onclick="start()">▸ Start</button>
-      <button class="action stop" id="stopBtn" onclick="stop()" disabled>■ Stop</button>
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>Status</h2>
-    <div class="statusline">
-      <span class="dot" id="dot"></span>
-      <span class="statuslabel" id="statusText">Idle</span>
-      <span class="statusmeta" id="elapsed"></span>
-    </div>
-    <pre id="log">(no output yet)</pre>
-  </div>
-</div>
-
-<section class="results">
-  <h2>Best results <span class="count" id="bestsCount"></span></h2>
-  <table id="bestsTable">
-    <thead><tr><th>Graph</th><th>Method</th><th class="num">k</th><th class="num">totalX</th></tr></thead>
-    <tbody><tr class="empty-row"><td colspan="4">no results yet</td></tr></tbody>
-  </table>
-</section>
-
-<footer>
-  <span>bin/server</span>
-  <span id="clock"></span>
-</footer>
-
-</div>
-<script>
-let mode = 'batch';
-let methodsAvailable = [];
-let selectedMethods = new Set(['sa', 'sa-stress']);
-let graphsAvailable = [];
-let selectedGraphs = new Set();
-
-function setMode(m) {
-  mode = m;
-  document.querySelectorAll('nav.modes button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
-  document.getElementById('batchFields').style.display = m === 'batch' ? 'block' : 'none';
-  document.getElementById('orchFields').style.display = m === 'orchestrator' ? 'block' : 'none';
-}
-
-async function loadInputSets() {
-  try {
-    const r = await fetch('/api/input-sets');
-    const sets = await r.json();
-    const sel = document.getElementById('inputSet');
-    sel.innerHTML = sets.length
-      ? sets.map(s => `<option value="${s.name}">${s.name} (${s.count})</option>`).join('')
-      : '<option value="">none found under data/input/</option>';
-  } catch (e) { /* keep the loading placeholder */ }
-  loadGraphs();
-}
-
-async function loadGraphs() {
-  const name = document.getElementById('inputSet').value;
-  document.getElementById('reportLink').href = name ? ('/report?input_set=' + encodeURIComponent(name)) : '/report';
-  graphsAvailable = [];
-  selectedGraphs = new Set();
-  if (name) {
-    try {
-      const r = await fetch('/api/graphs?input_set=' + encodeURIComponent(name));
-      graphsAvailable = await r.json();
-      selectedGraphs = new Set(graphsAvailable.map(g => g.name)); // all checked by default
-    } catch (e) { /* ignore */ }
-  }
-  renderGraphList();
-}
-
-function renderGraphList() {
-  document.getElementById('graphList').innerHTML = graphsAvailable.map(g => `
-    <label>
-      <input type="checkbox" ${selectedGraphs.has(g.name) ? 'checked' : ''} onchange="toggleGraph('${g.name}')">
-      <span class="gname">${g.name}</span>
-      <span class="gmeta">n=${g.n} m=${g.m}</span>
-    </label>`).join('');
-  document.getElementById('graphCount').textContent =
-    graphsAvailable.length ? (selectedGraphs.size + ' / ' + graphsAvailable.length + ' selected') : '';
-}
-
-function toggleGraph(name) {
-  if (selectedGraphs.has(name)) selectedGraphs.delete(name); else selectedGraphs.add(name);
-  renderGraphList();
-}
-
-function uncheckAllGraphs() {
-  selectedGraphs.clear();
-  renderGraphList();
-}
-
-async function loadMethods() {
-  try {
-    const r = await fetch('/api/methods');
-    methodsAvailable = await r.json();
-    renderChips();
-  } catch (e) { /* ignore */ }
-}
-
-function renderChips() {
-  document.getElementById('methodChips').innerHTML = methodsAvailable.map(m =>
-    `<div class="chip ${selectedMethods.has(m.id) ? 'on' : ''}" onclick="toggleMethod('${m.id}')">${m.id}</div>`
-  ).join('');
-}
-
-function toggleMethod(id) {
-  if (selectedMethods.has(id)) selectedMethods.delete(id); else selectedMethods.add(id);
-  renderChips();
-}
-
-async function start() {
-  const cfg = { mode, input_set: document.getElementById('inputSet').value };
-  if (mode === 'batch') {
-    if (!selectedMethods.size) { alert('Pick at least one method.'); return; }
-    Object.assign(cfg, {
-      out_dir: document.getElementById('outDir').value,
-      methods: [...selectedMethods].join(','),
-      workers: +document.getElementById('workers').value,
-      seed: +document.getElementById('seed').value,
-      minutes_small: +document.getElementById('minSmall').value,
-      minutes_medium: +document.getElementById('minMedium').value,
-      minutes_large: +document.getElementById('minLarge').value,
-    });
-  } else {
-    Object.assign(cfg, {
-      out_dir: document.getElementById('oOutDir').value,
-      graphs_dir: document.getElementById('oGraphsDir').value,
-      workers: +document.getElementById('oWorkers').value,
-      budget_sec: +document.getElementById('oBudget').value,
-      seed: +document.getElementById('oSeed').value,
-    });
-  }
-  if (!cfg.input_set && !cfg.graphs_dir) { alert('Pick an input set (or an explicit graphs folder).'); return; }
-  if (cfg.input_set && !cfg.graphs_dir && graphsAvailable.length) {
-    if (!selectedGraphs.size) { alert('Select at least one graph to run.'); return; }
-    if (selectedGraphs.size < graphsAvailable.length) cfg.only = [...selectedGraphs].join(',');
-  }
-  const r = await fetch('/api/start', { method: 'POST', body: JSON.stringify(cfg) });
-  const j = await r.json();
-  if (j.error) alert(j.error);
-  poll();
-}
-
-async function stop() {
-  await fetch('/api/stop', { method: 'POST' });
-  poll();
-}
-
-async function poll() {
-  try {
-    const r = await fetch('/api/status');
-    const s = await r.json();
-    document.getElementById('dot').classList.toggle('on', !!s.running);
-    document.getElementById('statusText').textContent = s.running ? ('Running · ' + s.mode) : 'Idle';
-    document.getElementById('elapsed').textContent = s.elapsed_sec ? (s.elapsed_sec.toFixed(0) + 's elapsed') : '';
-    document.getElementById('startBtn').disabled = !!s.running;
-    document.getElementById('stopBtn').disabled = !s.running;
-    document.getElementById('log').textContent = s.log_tail || '(no output yet)';
-
-    const tbody = document.querySelector('#bestsTable tbody');
-    const entries = s.bests ? Object.entries(s.bests) : [];
-    document.getElementById('bestsCount').textContent = entries.length ? ('— ' + entries.length + ' entries') : '';
-    if (!entries.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="4">no results yet</td></tr>';
-    } else {
-      const rows = entries.map(([key, v]) => {
-        const idx = key.lastIndexOf('__');
-        return { graph: key.slice(0, idx), method: key.slice(idx + 2), k: v.k, totalX: v.totalX };
-      }).sort((a, b) => a.graph.localeCompare(b.graph) || a.method.localeCompare(b.method));
-      const bestByGraph = {};
-      for (const row of rows) {
-        if (row.k == null) continue;
-        if (!(row.graph in bestByGraph) || row.k < bestByGraph[row.graph]) bestByGraph[row.graph] = row.k;
-      }
-      tbody.innerHTML = rows.map(row => {
-        const isBest = row.k != null && row.k === bestByGraph[row.graph];
-        return `<tr><td>${row.graph}</td><td>${row.method}</td>` +
-               `<td class="num${isBest ? ' best' : ''}">${row.k ?? '—'}</td><td class="num">${row.totalX ?? '—'}</td></tr>`;
-      }).join('');
+    std::map<std::pair<std::string,std::string>, mjson::Value> bestResults;
+    if (bests.isObj()) {
+        for (auto& [key, val] : bests.asObject()) {
+            auto pos = key.find("__");
+            if (pos == std::string::npos) continue;
+            bestResults[{key.substr(0, pos), key.substr(pos + 2)}] = val;
+        }
     }
-  } catch (e) { /* server briefly unreachable between polls; ignore */ }
-}
+    std::set<std::string> allGraphs, allMethods;
+    std::map<std::string, std::pair<long long,long long>> graphMeta;
+    std::map<std::tuple<std::string,std::string,std::string>, mjson::Value> comboLookup;
+    if (history.has("runs")) {
+        for (auto& run : history.at("runs").asArray()) {
+            std::string runId = run.has("id") ? run.at("id").asString() : "";
+            if (!run.has("combos")) continue;
+            for (auto& c : run.at("combos").asArray()) {
+                std::string g = c.at("graph").asString(), m = c.at("method").asString();
+                allGraphs.insert(g); allMethods.insert(m);
+                if (c.has("nodes")) graphMeta[g] = {c.at("nodes").asLL(), c.at("edges").asLL()};
+                comboLookup[{g, m, runId}] = c;
+            }
+        }
+    }
+    std::vector<std::string> graphs(allGraphs.begin(), allGraphs.end());
+    std::sort(graphs.begin(), graphs.end(), [](auto& a, auto& b) {
+        return a.size() != b.size() ? a.size() < b.size() : a < b;
+    });
+    std::vector<std::string> methods(allMethods.begin(), allMethods.end());
+    size_t nRuns = history.has("runs") ? history.at("runs").asArray().size() : 0;
 
-function tickClock() {
-  document.getElementById('clock').textContent = new Date().toISOString().slice(0, 19).replace('T', ' ') + ' UTC';
-}
-setInterval(tickClock, 1000);
-tickClock();
+    mjson::Value out = mjson::Value::makeObject();
+    out["input_set"] = setName;
+    std::ostringstream meta; meta << graphs.size() << " graphs \xc2\xb7 " << nRuns << " runs";
+    out["meta"] = meta.str();
 
-loadInputSets();
-loadMethods();
-poll();
-setInterval(poll, 3000);
-</script>
-</body>
-</html>
-)HTML";
+    mjson::Value methodsArr = mjson::Value::makeArray();
+    for (auto& m : methods) methodsArr.push_back(mjson::Value(m));
+    out["methods"] = methodsArr;
+
+    mjson::Value graphsArr = mjson::Value::makeArray();
+    for (auto& g : graphs) {
+        auto gm = graphMeta.count(g) ? graphMeta[g] : std::make_pair(0LL, 0LL);
+        std::optional<long long> best;
+        for (auto& m : methods) {
+            auto it = bestResults.find({g, m});
+            if (it != bestResults.end() && it->second.has("k") && !it->second.at("k").isNull()) {
+                long long k = it->second.at("k").asLL();
+                if (!best.has_value() || k < *best) best = k;
+            }
+        }
+        mjson::Value row = mjson::Value::makeObject();
+        row["graph"] = g;
+        row["nodes"] = gm.first;
+        row["edges"] = gm.second;
+        row["best_k"] = best.has_value() ? mjson::Value(*best) : mjson::Value();
+
+        mjson::Value results = mjson::Value::makeObject();
+        for (auto& m : methods) {
+            auto it = bestResults.find({g, m});
+            mjson::Value cell = mjson::Value::makeObject();
+            if (it == bestResults.end() || !it->second.has("k") || it->second.at("k").isNull()) {
+                cell["k"] = mjson::Value();
+                cell["totalX"] = mjson::Value();
+                cell["initK"] = mjson::Value();
+                cell["sec"] = mjson::Value();
+                cell["workers"] = mjson::Value();
+            } else {
+                const mjson::Value& b = it->second;
+                cell["k"] = b.at("k").asLL();
+                cell["totalX"] = (b.has("totalX") && !b.at("totalX").isNull()) ? b.at("totalX") : mjson::Value();
+                cell["sec"] = (b.has("wall_clock_sec") && !b.at("wall_clock_sec").isNull()) ? b.at("wall_clock_sec") : mjson::Value();
+                cell["workers"] = (b.has("n_workers") && !b.at("n_workers").isNull()) ? b.at("n_workers") : mjson::Value();
+                std::string runId = b.has("run_id") ? b.at("run_id").asString() : "";
+                auto cit = comboLookup.find({g, m, runId});
+                cell["initK"] = (cit != comboLookup.end() && cit->second.has("baseline_k") && !cit->second.at("baseline_k").isNull())
+                                 ? mjson::Value(cit->second.at("baseline_k").asLL()) : mjson::Value();
+            }
+            results[m] = cell;
+        }
+        row["results"] = results;
+        graphsArr.push_back(row);
+    }
+    out["graphs"] = graphsArr;
+    return out;
+}
 
 } // namespace
 
@@ -666,7 +451,16 @@ int main(int argc, char** argv) {
         auto [path, query] = splitQuery(req.path);
 
         if (req.method == "GET" && (path == "/" || path == "/index.html")) {
-            sendResponse(fd, 200, "text/html; charset=utf-8", INDEX_HTML);
+            sendResponse(fd, 200, "text/html; charset=utf-8",
+                        readFileOr(ROOT() + "/gui/index.html", "<html><body>missing gui/index.html</body></html>"));
+        } else if (req.method == "GET" && path.rfind("/gui/", 0) == 0 && path.find("..") == std::string::npos) {
+            std::string assetPath = ROOT() + path;
+            std::ifstream f(assetPath, std::ios::binary);
+            if (!f) sendResponse(fd, 404, "text/plain", "not found");
+            else {
+                std::ostringstream ss; ss << f.rdbuf();
+                sendResponse(fd, 200, contentTypeFor(path), ss.str());
+            }
         } else if (req.method == "GET" && path == "/api/status") {
             sendResponse(fd, 200, "application/json", apiStatus().dump());
         } else if (req.method == "GET" && path == "/api/methods") {
@@ -676,22 +470,16 @@ int main(int argc, char** argv) {
         } else if (req.method == "GET" && path == "/api/graphs") {
             auto it = query.find("input_set");
             sendResponse(fd, 200, "application/json", apiGraphs(it == query.end() ? "" : it->second).dump());
-        } else if (req.method == "GET" && path == "/report") {
-            std::string outDir;
+        } else if (req.method == "GET" && path == "/api/report") {
+            // Rendered on demand from bests.json + history.json - no HTML
+            // file is ever written into data/output/<set>/; the GUI lives
+            // solely under gui/ (see apiReport, consumed by gui/index.html).
+            std::string setName;
             auto setIt = query.find("input_set");
-            if (setIt != query.end() && !setIt->second.empty()) {
-                outDir = joinPath(ROOT(), "data/output/" + setIt->second);
-            } else {
-                std::lock_guard<std::mutex> lk(g_run.mu); outDir = g_run.outDir;
-            }
-            if (outDir.empty()) outDir = joinPath(ROOT(), "data/output");
-            std::string reportPath = outDir + "/report.html";
-            std::ifstream f(reportPath);
-            if (!f) { sendResponse(fd, 404, "text/plain", "no report.html yet under " + outDir); }
-            else {
-                std::ostringstream ss; ss << f.rdbuf();
-                sendResponse(fd, 200, "text/html; charset=utf-8", ss.str());
-            }
+            if (setIt != query.end() && !setIt->second.empty()) setName = setIt->second;
+            else { std::lock_guard<std::mutex> lk(g_run.mu); setName = pathBasename(g_run.outDir); }
+
+            sendResponse(fd, 200, "application/json", apiReport(setName).dump());
         } else if (req.method == "POST" && path == "/api/start") {
             mjson::Value cfg;
             try { cfg = req.body.empty() ? mjson::Value::makeObject() : mjson::parse(req.body); }

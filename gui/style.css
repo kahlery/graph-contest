@@ -1,0 +1,411 @@
+/* Stylesheet for the control panel page bin/server serves, including its
+   inline full-report table (rendered client-side from GET /api/report). */
+:root {
+    --bg: #fbfcfd;
+    --surface: #f0f3f6;
+    --fg: #12161d;
+    --muted: #5b6472;
+    --line: #d7dce2;
+    --accent: #1257c9;
+    --accent-dark: #0d3f97;
+    --good: #16a34a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo,
+        Consolas, "Liberation Mono", monospace;
+}
+* {
+    box-sizing: border-box;
+}
+html,
+body {
+    margin: 0;
+    padding: 0;
+}
+body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.55;
+}
+.wrap {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 32px;
+}
+a {
+    color: var(--accent);
+}
+
+header {
+    border-bottom: 1px solid var(--line);
+    padding: 24px 0;
+}
+.kicker {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+header h1 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+header .meta {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+nav.modes {
+    display: flex;
+    gap: 4px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+}
+nav.modes button {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 9px 16px;
+    cursor: pointer;
+    color: var(--muted);
+}
+nav.modes button.active {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+}
+nav.modes button:hover:not(.active) {
+    color: var(--fg);
+    border-color: var(--muted);
+}
+
+.panel-full {
+    padding: 24px 0;
+    border-bottom: 1px solid var(--line);
+}
+.grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+}
+
+h2 {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+}
+
+.field {
+    margin-bottom: 14px;
+}
+.field label {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+}
+.field input:not([type="checkbox"]),
+.field select {
+    width: 100%;
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: #fff;
+    color: var(--fg);
+    appearance: none;
+}
+.field input:focus,
+.field select:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    border-color: var(--accent);
+}
+.row2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+.row3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+}
+
+.chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.chip {
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 5px 11px;
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+    background: #fff;
+}
+.chip.on {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+.chip:hover:not(.on) {
+    background: var(--surface);
+}
+
+.graphlist {
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin-top: 8px;
+    max-height: 170px;
+    overflow-y: auto;
+}
+.graphlist label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--line);
+}
+.graphlist label:nth-child(even) {
+    background: var(--surface);
+}
+.graphlist label:last-child {
+    border-bottom: none;
+}
+.graphlist label:hover {
+    background: #e8eef8;
+}
+.graphlist input[type="checkbox"] {
+    width: auto;
+    accent-color: var(--accent);
+    margin: 0;
+}
+.graphlist .gname {
+    flex: 1;
+}
+.graphlist .gmeta {
+    color: var(--muted);
+    font-size: 11px;
+}
+.graphlist-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 8px;
+}
+.linkbtn {
+    background: none;
+    border: none;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 0;
+}
+.linkbtn:hover {
+    color: var(--accent-dark);
+}
+
+.btnrow {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+button.action {
+    font-family: var(--mono);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-size: 12px;
+    padding: 10px 22px;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+}
+button.action.stop {
+    background: #fff;
+    color: var(--fg);
+    border-color: var(--line);
+}
+button.action:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+button.action:not(:disabled):hover {
+    background: var(--accent-dark);
+    border-color: var(--accent-dark);
+    color: #fff;
+}
+button.action.stop:not(:disabled):hover {
+    background: var(--surface);
+    border-color: var(--line);
+    color: var(--fg);
+}
+
+.statusline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    margin-bottom: 14px;
+}
+.dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+    background: var(--muted);
+}
+.dot.on {
+    background: var(--good);
+    box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
+}
+.statuslabel {
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-size: 12px;
+}
+.statusmeta {
+    color: var(--muted);
+    margin-left: auto;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.logsection {
+    padding: 24px 0;
+}
+pre#log {
+    margin: 0;
+    background: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 14px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    max-height: 320px;
+    overflow-x: auto;
+    overflow-y: auto;
+    white-space: pre;
+}
+
+section {
+    padding: 24px 0;
+}
+.results {
+    padding: 24px 0 40px;
+}
+.results h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+.results h2 .count,
+h2 .count {
+    color: var(--muted);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 11px;
+}
+.tbl-scroll {
+    overflow-x: auto;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    min-width: max-content;
+}
+thead th {
+    text-align: left;
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--fg);
+    padding: 7px 10px 8px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+tbody td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+tbody tr:nth-child(even) td {
+    background: var(--surface);
+}
+tbody tr:hover td {
+    background: #e8eef8;
+}
+th.num,
+td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+td.best {
+    color: var(--accent);
+    font-weight: 700;
+}
+.empty-row td {
+    color: var(--muted);
+    font-style: normal;
+}
+.empty-row:nth-child(even) td {
+    background: transparent;
+}
+td:first-child,
+th:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--bg);
+}
+tbody tr:nth-child(even) td:first-child {
+    background: var(--surface);
+}
+tbody tr:hover td:first-child {
+    background: #e8eef8;
+}
+
+footer {
+    padding: 18px 0 36px;
+    color: var(--muted);
+    font-size: 11px;
+    display: flex;
+    justify-content: space-between;
+    border-top: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+}
