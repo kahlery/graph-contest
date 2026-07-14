@@ -44,7 +44,11 @@ using TimePoint = Clock::time_point;
 namespace {
 
 // --- tunables (graphs here are <=600 nodes, so quanta are small) --------- //
-constexpr double QMIN = 25.0, QMAX = 120.0;
+// QMAX bumped 120 -> 240 (2026-07): it only binds late, when few graphs are
+// live — exactly the large-graph grind, where longer continuous phase-2
+// descents dominate (a single 3-min continuous warm run beat ten chopped
+// 112s/xchg-4 leases on instance_05: k 231 -> 218).
+constexpr double QMIN = 25.0, QMAX = 240.0;
 constexpr double EXPLORE_CAP  = 0.45;
 constexpr int    STALL_LEASES = 2;
 constexpr int    MIN_LEASES   = 2;
@@ -52,6 +56,12 @@ constexpr double DENSE_DENS   = 8.0;
 constexpr double LEASE_FLOOR  = 12.0;
 constexpr double OVERRUN      = 1.5;
 constexpr int    XCHG_ROUNDS  = 4;
+// NH_SIZE stays 12 for lease-time LNS. nh-size 8 wins OFFLINE (2026-07-08
+// 25-min staged sweep on instance_08: nh8 k=61 vs nh12 66/68 vs nh24 67) but
+// inside a 240s lease approach1 blows straight through its -t budget with
+// nh 8 (05: 680s, 08: 1086s per lease in corch_1783476249), wrecking the
+// hour's schedule (sum-k 608 vs 549). Until approach1's deadline handling
+// with small neighbourhoods is fixed, nh8 remains a manual deep-run recipe.
 constexpr int    NH_SIZE = 12, NH_CANDS = 64;
 
 double clampd(double x, double lo, double hi) { return std::max(lo, std::min(hi, x)); }
@@ -75,13 +85,24 @@ double quantumBase(double budget, int nLive, std::optional<double> override_ = s
     return clampd(budget / (4.0 * std::max(1, nLive)), QMIN, QMAX);
 }
 
-struct BidInputs { int leases; bool done; double lastDk; double lastDxf; std::optional<int> bestK; };
+struct BidInputs {
+    int leases; bool done; double lastDk; double lastDxf;
+    std::optional<int> bestK;
+    std::optional<int> target;   // when set, bid on gap-to-target, not raw k
+};
 
 double bid(const BidInputs& g) {
     if (g.leases == 0) return std::numeric_limits<double>::infinity();
     if (g.done) return -1.0;
     double boost = (g.lastDk > 0 || g.lastDxf > 0) ? 1.5 : 1.0;
-    return (double)g.bestK.value_or(0) * boost / g.leases;
+    // With targets, raw-k bidding starves low-k graphs that are just as far
+    // from THEIR target (focused run #5: instance_08 broke through to 70 in
+    // explore, then never won another auction against k~210 peers). The
+    // room that matters is the distance still to close.
+    double room = (g.target.has_value() && g.bestK.has_value())
+                      ? (double)std::max(1, *g.bestK - *g.target)
+                      : (double)g.bestK.value_or(0);
+    return room * boost / g.leases;
 }
 
 bool converged(int leases, int stalls) { return leases >= MIN_LEASES && stalls >= STALL_LEASES; }
@@ -92,6 +113,9 @@ struct GraphState {
     int n = 0, m = 0;
     std::string method0;
     std::optional<int> bestK, bestX;
+    std::optional<int> target;   // --targets: bank budget once bestK <= target
+    int altCold = 0;             // cold-restart family rotation index:
+                                 // cycles tripod -> staged -> method0
     std::string warm;
     int leases = 0, stalls = 0;
     double lastDk = 0.0, lastDxf = 0.0;
@@ -104,7 +128,8 @@ public:
     ContestOrchestrator(const std::string& graphsDir, double budget, int workers,
                         const std::string& outDir, long long seed, int xchgRounds, bool halfShare,
                         double denseDens, std::optional<double> quantumOverride,
-                        const std::string& only = "")
+                        const std::string& only = "",
+                        const std::map<std::string,int>& targets = {})
         : budget_(budget), W_(workers), seed_(seed), xchg_(xchgRounds), half_(halfShare),
           denseDens_(denseDens), qOverride_(quantumOverride), outRoot_(outDir),
           label_(pathBasename(graphsDir)) {
@@ -114,6 +139,10 @@ public:
         bests_ = loadJsonDefault(outRoot_ + "/bests.json", mjson::Value::makeObject());
         noGraphviz_ = !commandExists("sfdp") && !commandExists("neato");
         G_ = build(graphsDir, only);
+        for (auto& [nm, g] : G_) {
+            auto it = targets.find(nm);
+            if (it != targets.end()) g.target = it->second;
+        }
     }
 
     mjson::Value run() {
@@ -193,15 +222,67 @@ private:
     }
 
     // --- one lease ----------------------------------------------------- //
-    bool lease(const std::string& nm, GraphState& g) {
+    // forceColdMethod: run this lease cold with the given method regardless
+    // of warm state (dual-family explore); absorb() keeps it only if better.
+    bool lease(const std::string& nm, GraphState& g,
+               const std::string& forceColdMethod = "") {
         double rem = remaining();
         if (rem < LEASE_FLOOR) return false;
         double qb = quantumBase(budget_, nLive(), qOverride_);
+        // Large graphs get a doubled quantum: their continuous anneals keep
+        // paying well past 112s (corch_1783425898: instance_05 still dropping
+        // k at lease end), while nLive() stays high all hour because small
+        // near-target graphs rarely reach the formal converged() state, which
+        // pins quantumBase at ~budget/(4*9) and starves the grind of depth.
+        // Only from the third lease on: the explore + second-lease-guarantee
+        // passes must stay cheap or they'd eat the whole greedy budget.
         double q = std::min(qb, rem);
-        bool cold = g.warm.empty();
-        std::string method = cold ? g.method0 : "sa-warm";
-        std::string warm = cold ? "" : g.warm;
-        int xchg = std::max(1, std::min(xchg_, (int)(q / 18)));
+        if (g.n + g.m >= 1000 && g.leases >= 2)
+            q = std::min(std::min(2.0 * qb, QMAX), rem);
+        // A forced-family lease (staged = LNS then SA) needs room for the LNS
+        // stage to actually build its sparser layout family.
+        if (!forceColdMethod.empty())
+            q = std::min(std::min(2.0 * qb, QMAX), rem);
+        bool cold = g.warm.empty() || !forceColdMethod.empty();
+        // Diversified cold restart: on large graphs the warm chain can lock
+        // into a shallow basin (ab4 A/B: instance_06 warm chain dead-ended at
+        // 221 while a fresh-seed cold descent reached 206, crossing 217 within
+        // one doubled quantum). On every odd stall, spend the lease on a fresh
+        // cold multi-start instead of another warm continuation; absorb()
+        // keeps it only if it beats the incumbent, so the downside is one
+        // lease of budget and the upside is a whole new basin.
+        // Family rotation is for big-gap graphs stuck in a basin; a graph
+        // within 3 of its target needs warm POLISH plus the 8-worker seed
+        // lottery, not a from-scratch family re-roll (full-9 run seed 7:
+        // instance_04's stall-rotation cold restarts burned its urgency
+        // leases while the warm continuation that found 32 never ran).
+        bool closable = g.target.has_value() && g.bestK.has_value() &&
+                        *g.bestK - *g.target <= 3;
+        bool coldRestart = !cold && !closable && (g.n + g.m >= 1000) &&
+                           (g.stalls % 2 == 1);
+        // Cold restarts rotate through layout FAMILIES, not just seeds:
+        // tripod (structural 3-arm init — 05/06 records), staged (LNS->SA,
+        // sparser family — 08 records), then the force-directed method0.
+        static const char* FAMILIES[] = {"tripod", "staged", nullptr};
+        std::string method = !forceColdMethod.empty() ? forceColdMethod
+                           : cold ? g.method0
+                           : coldRestart
+                               ? (FAMILIES[g.altCold % 3]
+                                      ? std::string(FAMILIES[g.altCold % 3])
+                                      : g.method0)
+                               : "sa-warm";
+        if (coldRestart) g.altCold++;
+        std::string warm = (cold || coldRestart) ? "" : g.warm;
+        // Chopping a lease into xchg rounds resets the SA cooling schedule
+        // every q/xchg seconds. On big graphs that keeps phase 2 permanently
+        // hot: the corch_1783421945 A/B showed one continuous 3-min descent
+        // beating an hour of 28s-round leases (instance_05 k 231 -> 218).
+        // So large graphs run each lease as ONE continuous anneal (workers
+        // still explore independently and share via the warm handoff between
+        // leases); only small graphs keep the round-based elite exchange.
+        int xchg = (g.n + g.m >= 1000)
+                       ? 1
+                       : std::max(1, std::min(xchg_, (int)(q / 18)));
         std::string qdir = runDir_ + "/" + nm + "/q" + std::to_string(g.leases);
         mkdirs(qdir);
         leaseTimeout_ = std::max(45.0, q * OVERRUN);
@@ -219,9 +300,15 @@ private:
             RunFn rf = [this](const std::vector<std::string>& cmd, const std::string& log) {
                 return runWithBackstop(cmd, log);
             };
-            auto combo = runCombo(method, g.path, q / 60.0, cold ? 0.2 : 0.05,
+            // Warm continuations skip phase 1 entirely (p1Frac 0): re-running
+            // the hot totalX anneal on an already k-optimised layout first
+            // degrades it and then burns budget re-converging — the k walk
+            // (phase 2) can resume directly from the warm layout.
+            auto combo = runCombo(method, g.path, q / 60.0,
+                                   (cold || coldRestart) ? 0.2 : 0.0,
                                    seed_ + (long long)g.leases * 100, qdir, W_, NH_SIZE, NH_CANDS,
-                                   0.5, 0, warm, xchg, half_ && xchg > 1, rf);
+                                   /*lnsFrac*/ 0.35, 0, warm, xchg,
+                                   half_ && xchg > 1, rf);
             bestW = combo.best;
             wall = combo.wallTotal;
         } catch (std::exception& e) {
@@ -274,6 +361,15 @@ private:
             g.stalls++;
         }
         if (nk.value() == 0 || (wall < 0.4 * q && q >= QMIN)) g.done = true;
+        // Target reached: bank the rest of this graph's budget for the ones
+        // still above target (run #3 spent ~30% of the hour re-leasing graphs
+        // that were already at the score we're chasing).
+        if (!g.done && g.target.has_value() && g.bestK.has_value() &&
+            *g.bestK <= *g.target) {
+            g.done = true;
+            log(nm + ": target " + std::to_string(*g.target) + " reached (k=" +
+                std::to_string(*g.bestK) + ") -> bank budget");
+        }
     }
 
     // --- scheduler ------------------------------------------------------ //
@@ -296,13 +392,46 @@ private:
             if (remaining() < LEASE_FLOOR) break;
             lease(nm, *gp);
         }
+        // Dual-family explore: the best layout family is graph-specific and
+        // cannot be predicted. Large graphs get a second cold lease from the
+        // TRIPOD family — it beat or matched staged as a cold start on every
+        // tested graph (05: 210 vs 235, 06: 210 vs 228, 08: 68 vs 68) and
+        // its init stage is instant, so nearly the whole lease is SA. staged
+        // stays in the cold-restart rotation. absorb() keeps whichever
+        // family won; every later warm lease builds on that winner.
+        for (auto& [nm, gp] : todo) {
+            if (gp->done || gp->n + gp->m < 1000) continue;
+            if (remaining() < LEASE_FLOOR) break;
+            lease(nm, *gp, "tripod");
+        }
     }
 
     void greedy() {
+        // Anti-starvation prologue: bid() is proportional to bestK, so the
+        // high-k grind graphs monopolize every quantum and near-target small
+        // graphs never see a second lease (corch_1783421945: instance_03 sat
+        // one k above target all hour with leases=1). One guaranteed second
+        // lease each, hardest-first, before the marginal-gain auction.
+        {
+            std::vector<std::pair<std::string, GraphState*>> starved;
+            for (auto& [nm, g] : G_)
+                if (!g.done && g.leases < 2) starved.push_back({nm, &g});
+            std::sort(starved.begin(), starved.end(), [](auto& a, auto& b) {
+                return a.second->bestK.value_or(0) > b.second->bestK.value_or(0);
+            });
+            if (!starved.empty()) log("=== SECOND-LEASE guarantee ===");
+            for (auto& [nm, gp] : starved) {
+                if (remaining() < LEASE_FLOOR) break;
+                lease(nm, *gp);
+            }
+        }
         log("=== GREEDY marginal-gain reallocation ===");
         while (remaining() >= LEASE_FLOOR) {
             for (auto& [nm, g] : G_) {
-                if (!g.done && converged(g.leases, g.stalls)) {
+                // Large graphs need headroom for cold-restart attempts (each
+                // failed restart is a stall), so they converge at 4 stalls.
+                int stallsEff = (g.n + g.m >= 1000) ? g.stalls - 2 : g.stalls;
+                if (!g.done && converged(g.leases, stallsEff)) {
                     g.done = true;
                     char buf[64];
                     snprintf(buf, sizeof(buf), "converged: bank budget (k=%s)",
@@ -313,8 +442,21 @@ private:
             std::vector<std::tuple<double,std::string,GraphState*>> live;
             for (auto& [nm, g] : G_) {
                 if (!g.done) {
-                    BidInputs bi{g.leases, g.done, g.lastDk, g.lastDxf, g.bestK};
-                    live.push_back({bid(bi), nm, &g});
+                    BidInputs bi{g.leases, g.done, g.lastDk, g.lastDxf, g.bestK, g.target};
+                    double b = bid(bi);
+                    // Closable-gap urgency: a graph within 3 of its target can
+                    // be closed by one lucky lease. But it IS a lottery —
+                    // full-9 seed-7 let two such graphs eat 60% of the hour
+                    // and close nothing while the k~230 graphs sat at their
+                    // raw explore values. Cap: at most 2 urgency leases each
+                    // (leases<4 incl. explore) and none in the last quarter
+                    // of the budget, which stays reserved for the big grind.
+                    if (g.target.has_value() && g.bestK.has_value() &&
+                        g.leases < 4 && remaining() > 0.25 * budget_) {
+                        int gap = *g.bestK - *g.target;
+                        if (gap > 0 && gap <= 3) b = 1e6 / (1.0 + g.leases);
+                    }
+                    live.push_back({b, nm, &g});
                 }
             }
             if (live.empty()) { log("all graphs converged -> stop early, budget banked"); break; }
@@ -445,6 +587,7 @@ struct Args {
     std::string inputSet;
     std::string graphsDir;
     std::string only; // comma-separated graph names to keep (blank = all)
+    std::string targets; // "name=k,name=k": bank a graph's budget at k<=target
     double budget = 2700;
     int workers = 8;
     std::string outDir; // blank = auto: data/output/<input-set-name>
@@ -467,6 +610,7 @@ Args parseArgs(int argc, char** argv) {
         if (s == "--input-set") a.inputSet = next();
         else if (s == "--graphs-dir") a.graphsDir = next();
         else if (s == "--only") a.only = next();
+        else if (s == "--targets") a.targets = next();
         else if (s == "--budget") a.budget = std::stod(next());
         else if (s == "--workers") a.workers = std::stoi(next());
         else if (s == "--out-dir") a.outDir = next();
@@ -510,8 +654,19 @@ int main(int argc, char** argv) {
     // data/input/<set>/) so different sets never collide on graph names.
     std::string outDir = !args.outDir.empty() ? args.outDir : ("data/output/" + pathBasename(graphsDir));
 
+    std::map<std::string,int> targets;
+    for (auto& part : splitCsv(args.targets)) {
+        size_t eq = part.find('=');
+        if (eq == std::string::npos) {
+            fprintf(stderr, "contest_orchestrate: bad --targets entry: %s\n", part.c_str());
+            return 2;
+        }
+        targets[trim(part.substr(0, eq))] = std::stoi(part.substr(eq + 1));
+    }
+
     ContestOrchestrator orch(graphsDir, args.budget, args.workers, outDir, args.seed,
-                             args.xchgRounds, !args.noHalf, args.denseDensity, args.quantum, args.only);
+                             args.xchgRounds, !args.noHalf, args.denseDensity, args.quantum,
+                             args.only, targets);
     orch.run();
     return 0;
 }

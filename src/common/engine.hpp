@@ -53,6 +53,7 @@ inline std::string INPUT_DIR() { return ROOT() + "/data/input"; }
 inline std::string SAKGD()     { return ROOT() + "/bin/sakgd"; }
 inline std::string APPROACH1() { return ROOT() + "/bin/approach1"; }
 inline std::string STRESS_INIT() { return ROOT() + "/bin/stress_init"; }
+inline std::string TRIPOD_INIT() { return ROOT() + "/bin/tripod_init"; }
 
 // Mirrors Python pathlib's `root / sub`: an absolute `sub` replaces `root`
 // entirely rather than being appended to it.
@@ -305,15 +306,48 @@ struct MethodSpec {
 
 inline const std::vector<MethodSpec>& METHODS() {
     static const std::vector<MethodSpec> m = {
+        // "--cands 4": phase-2 best-of-4 benefit analysis — plan 4 candidate
+        // positions exactly per move and feed only the best dE to the accept
+        // rule. A/B (2026-07, warm 3-min runs on internal-2026 03/05/06/08,
+        // seed 555) beat or matched plain SA on every graph: k 11->9, 235->226,
+        // 228->224, 82->80, with totalX down 10-25%.
+        // Cold starts add "--cands-ramp 1": the early descent (far from any
+        // optimum) wants move volume, so C ramps 1 -> C/2 -> C over the phase
+        // budget; warm continuations are already in the fine-descent regime
+        // where the full best-of-4 pays from the first move.
+        // "--edge-move 5": rigid-segment translation of the hottest incident
+        // edge. Was 20; the 2026-07 move-log analysis (05/06/08, warm+cold)
+        // showed it eating ~20% of evaluations at 1.5-8.5% acceptance and
+        // ~0% localK-lowering share, at 2-4 planMove cost per attempt.
+        // "--cands-mix 1": the 4 candidate slots test distinct crossing-derived
+        // hypotheses. Post-analysis composition: gauss walk / hot-edge shrink /
+        // (subset centroid | random-partner reflect) / hottest-partner reflect —
+        // reflection got double weight as the top ΔlocalK<0 producer (9-17%
+        // of its accepts vs 3-11% for the blind walk).
         {"sa", "SA", 2, {
-            {"sakgd", "", "", "full", false, "", {}},
+            {"sakgd", "", "", "full", false, "",
+             {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
+              "--cands-mix", "1"}},
         }},
         {"sa-warm", "SA (warm cont.)", 2, {
-            {"sakgd", "", "", "full", false, "input", {}},
+            {"sakgd", "", "", "full", false, "input",
+             {"--cands", "4", "--edge-move", "5", "--cands-mix", "1"}},
         }},
         {"sa-stress", "SA (stress init)", 2, {
             {"stress", "", "init", "init", false, "", {}},
-            {"sakgd", "", "sa", "rest", true, "", {}},
+            {"sakgd", "", "sa", "rest", true, "",
+             {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
+              "--cands-mix", "1"}},
+        }},
+        // Tripod: structural init exploiting the winning tripod layout
+        // family (see src/tools/tripod_init.cpp). 10-min cold A/B on
+        // internal-2026: 05 = 210 vs sa-stress 234 / staged 235; warm chains
+        // from tripod layouts set the 05/06 records (196 / 202).
+        {"tripod", "SA (tripod init)", 2, {
+            {"tripod", "", "init", "flash", false, "", {}},
+            {"sakgd", "", "sa", "rest", true, "",
+             {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
+              "--cands-mix", "1"}},
         }},
         {"staged", "Staged", 2, {
             {"approach1", "lns", "lns", "lns", false, "", {}},
@@ -342,6 +376,7 @@ inline std::vector<double> resolveFracs(const MethodSpec& spec, double lnsFrac) 
         if (st.frac == "full")      fr.push_back(1.0);
         else if (st.frac == "lns")  fr.push_back(lnsFrac);
         else if (st.frac == "init") fr.push_back(INIT_FRAC);
+        else if (st.frac == "flash") fr.push_back(0.01); // instant init stages
         else                        fr.push_back(std::nullopt);
     }
     double used = 0;
@@ -392,6 +427,8 @@ inline RunMethodResult runMethod(const MethodSpec& spec, const std::string& gpat
         if (st.bin == "stress") {
             cmd = {STRESS_INIT(), "-i", inp, "-o", out, "-s", std::to_string(seed),
                    "-t", fmtFixed1(stageMin * 60.0)};
+        } else if (st.bin == "tripod") {
+            cmd = {TRIPOD_INIT(), "-i", inp, "-o", out, "-s", std::to_string(seed)};
         } else {
             std::string binpath = (st.bin == "sakgd") ? SAKGD() : APPROACH1();
             cmd = {binpath, "-i", inp, "-o", out, "-t", minsFmt(stageMin),
@@ -521,9 +558,11 @@ inline ComboResult runCombo(const std::string& method, const std::string& gpath,
                                      : (fileExists(elite) ? elite : inp);
                     out = outDir + "/" + method + suffix + "_r" + std::to_string(r) + ".json";
                     glogPath = outDir + "/" + method + suffix + "_r" + std::to_string(r) + ".log";
+                    // p1 0: warm rounds continue the k walk directly — see the
+                    // orchestrator's lease() for why phase 1 is skipped warm.
                     std::vector<std::string> cmd = {
                         SAKGD(), "-i", src, "-o", out, "-t", minsFmt(rmin),
-                        "-p1", minsFmt(rmin * 0.02), "-s", std::to_string(seed + (long long)r * 1000),
+                        "-p1", "0", "-s", std::to_string(seed + (long long)r * 1000),
                         "--init", "input"};
                     if (kband != 2) { cmd.push_back("--kband"); cmd.push_back(std::to_string(kband)); }
                     for (auto& e : extra) cmd.push_back(e);

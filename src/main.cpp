@@ -612,6 +612,62 @@ public:
     ll         bestX = LLONG_MAX;
     vector<Pt> bestPos;
 
+    // Move benefit/harm instrumentation (optional): appends one compact
+    // record per evaluated phase-2 move so the winning/losing move geometry
+    // can be analysed offline. Accepted moves are logged in full; rejected
+    // ones are 1/16-sampled to bound file size.
+    // Line: slot acc dLK dX dist d2c_b d2c_a r_b r_a deg xcHot
+    //   slot: 0-3 = cands-mix hypothesis slot, -1 = single/iid-gauss,
+    //         9 = coupled edge-translation
+    //   d2c: distance to the node's neighbour centroid (before/after)
+    //   r:   distance to the layout's centre of mass (before/after)
+    string   moveLogFile;
+    FILE*    moveLog = nullptr;
+    unsigned mlRejCnt = 0;
+    double   gcx = 0, gcy = 0;       // centre of mass, updated O(1) per commit
+
+    void moveLogOpen() {
+        if (!moveLogFile.empty() && !moveLog)
+            moveLog = fopen(moveLogFile.c_str(), "w");
+    }
+    void recomputeCenter() {
+        double sx = 0, sy = 0;
+        for (int i = 0; i < n; i++) { sx += pos[i].x; sy += pos[i].y; }
+        gcx = sx / max(1, n); gcy = sy / max(1, n);
+    }
+    void nbCentroid(int v, double& cx, double& cy) const {
+        const auto& inc = nodeEdges[v];
+        if (inc.empty()) { cx = pos[v].x; cy = pos[v].y; return; }
+        double sx = 0, sy = 0;
+        for (int e : inc) {
+            int u = (edges[e].u == v) ? edges[e].v : edges[e].u;
+            sx += pos[u].x; sy += pos[u].y;
+        }
+        cx = sx / inc.size(); cy = sy / inc.size();
+    }
+    static double dist2d(double ax, double ay, double bx, double by) {
+        double dx = ax - bx, dy = ay - by;
+        return sqrt(dx * dx + dy * dy);
+    }
+    // Log one evaluated move. Call BEFORE commit (positions unchanged).
+    void moveLogRecord(int v, int slot, bool acc, int dLK, ll dX,
+                       const Pt& oldP, const Pt& newP) {
+        if (!moveLog) return;
+        if (!acc && (++mlRejCnt & 15u) != 0) return;
+        double cx, cy;
+        nbCentroid(v, cx, cy);
+        int xh = 0;
+        for (int e : nodeEdges[v]) if (xc[e] > xh) xh = xc[e];
+        fprintf(moveLog, "%d %d %d %lld %.0f %.0f %.0f %.0f %.0f %zu %d\n",
+                slot, acc ? 1 : 0, dLK, (long long)dX,
+                dist2d(oldP.x, oldP.y, newP.x, newP.y),
+                dist2d(oldP.x, oldP.y, cx, cy),
+                dist2d(newP.x, newP.y, cx, cy),
+                dist2d(oldP.x, oldP.y, gcx, gcy),
+                dist2d(newP.x, newP.y, gcx, gcy),
+                nodeEdges[v].size(), xh);
+    }
+
     // Live status writer (optional).
     string                          statusFile;
     string                          statusId   = "run";
@@ -657,6 +713,40 @@ public:
                                     // 2 = barycenter-pull (bias toward neighbour
                                     // centroid + Gaussian jitter; force-directed
                                     // proposal inside the SA acceptance loop)
+                                    // 3 = smart mixture: neighbour-informed
+                                    // proposals (random-subset centroid, near a
+                                    // random neighbour, two-neighbour midpoint)
+                                    // mixed with the plain Gaussian walk
+    int            candsP2 = 1;     // phase-2 proposals evaluated per move:
+                                    // plan all C candidates exactly, feed only
+                                    // the best dE to the acceptance rule
+    int            candsP1 = 1;     // same for phase 1
+    int            edgeMoveP = 0;   // phase-2 % chance of a coupled edge-
+                                    // translation move (both endpoints of a
+                                    // bottleneck-ish incident edge shift by
+                                    // one shared delta) instead of a single-
+                                    // vertex proposal
+    bool           gridAnneal = false; // coarse-to-fine proposal quantisation:
+                                    // crossings depend only on the combinatorial
+                                    // arrangement, so proposals finer than the
+                                    // current structural resolution are wasted
+                                    // planMoves (move-log: improving moves have
+                                    // median dist 4-12k, tiny moves ~never win).
+                                    // Snap proposals to a grid that halves as
+                                    // the phase budget burns: ~min(W,H)/64 -> 1.
+                                    // A/B verdict (2026-07-11, paired tripod
+                                    // cold 10-min, 05/06/08 x 2 seeds): cuts
+                                    // variance (rescues bad seeds: 230->213,
+                                    // 81->71) but does not raise the ceiling
+                                    // and regresses 06 (213/215 -> 219/219);
+                                    // the 8-seed workers already harvest the
+                                    // best draw, so this stays OFF by default.
+    ll             gridStep = 1;    // current cell size (updated in runSA)
+    bool           candsRamp = false; // ramp C up over the phase budget:
+                                    // early descent (far from optimum) wants
+                                    // move VOLUME (C=1); the cooled fine
+                                    // descent wants move QUALITY (full C).
+                                    // <30% budget: 1, 30-60%: ceil(C/2), then C
     int            acceptMode = 0;  // 0 = Metropolis, 1 = threshold-accepting,
                                     // 2 = late-acceptance hill climbing (LAHC)
     bool           swapMove = false; // when a proposal lands on an occupied
@@ -1279,6 +1369,7 @@ public:
         buildVertexGrid();        // resync vertex grid for the fast overlap check
         computeAllCrossings();
         rebuildCum();
+        recomputeCenter();        // wholesale position change: resync exactly
     }
 
     // ----- selection -------------------------------------------------
@@ -1431,6 +1522,69 @@ public:
             }
         }
 
+        // Smart mixture proposal: with probability pNb, derive the target from
+        // the positions of v's graph neighbours instead of a blind random walk.
+        // Three neighbour-informed strategies, all + Gaussian jitter:
+        //   a) random-subset centroid — centroid of a random subset (>=2) of
+        //      neighbours; subsumes the full barycenter and generalises it,
+        //   b) near a random neighbour — shortens that incident edge directly,
+        //   c) two-neighbour midpoint — for cycle/chain-like local structure
+        //      (deg-2 vertices: exactly the point that straightens the chain).
+        // Neighbour-informed targets need less jitter than the exploring walk,
+        // so they use a tighter sigma; the remaining mass falls through to the
+        // plain Gaussian so global exploration never dies.
+        if (placeMode == 3) {
+            const auto& inc = nodeEdges[v];
+            double rs = uniform_real_distribution<double>(0, 1)(rng);
+            if (!inc.empty() && rs < 0.60) {
+                auto nbPos = [&](int e) -> const Pt& {
+                    return pos[(edges[e].u == v) ? edges[e].v : edges[e].u];
+                };
+                double tx, ty;
+                double r2 = uniform_real_distribution<double>(0, 1)(rng);
+                if (inc.size() >= 2 && r2 < 0.45) {
+                    // (a) centroid of a random subset of 2..deg neighbours
+                    int deg = (int)inc.size();
+                    int cntN = uniform_int_distribution<int>(2, deg)(rng);
+                    double sx = 0, sy = 0;
+                    for (int t = 0; t < cntN; t++) {
+                        const Pt& q = nbPos(inc[uniform_int_distribution<int>(
+                            0, deg - 1)(rng)]);
+                        sx += (double)q.x; sy += (double)q.y;
+                    }
+                    tx = sx / cntN; ty = sy / cntN;
+                } else if (inc.size() >= 2 && r2 < 0.70) {
+                    // (c) midpoint of two distinct random neighbours
+                    int deg = (int)inc.size();
+                    int i1 = uniform_int_distribution<int>(0, deg - 1)(rng);
+                    int i2 = uniform_int_distribution<int>(0, deg - 2)(rng);
+                    if (i2 >= i1) i2++;
+                    const Pt& q1 = nbPos(inc[i1]);
+                    const Pt& q2 = nbPos(inc[i2]);
+                    tx = 0.5 * (q1.x + q2.x); ty = 0.5 * (q1.y + q2.y);
+                } else {
+                    // (b) near a random neighbour
+                    const Pt& q = nbPos(inc[uniform_int_distribution<int>(
+                        0, (int)inc.size() - 1)(rng)]);
+                    tx = (double)q.x; ty = (double)q.y;
+                }
+                double sloc = max(2.0, sigma * 0.35);
+                normal_distribution<double> ndl(0.0, sloc);
+                ll nx = (ll)llround(tx + ndl(rng));
+                ll ny = (ll)llround(ty + ndl(rng));
+                if (nx < ox) nx = ox; if (nx > ox + W) nx = ox + W;
+                if (ny < oy) ny = oy; if (ny > oy + H) ny = oy + H;
+                if (nx == pos[v].x && ny == pos[v].y) {
+                    nx += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
+                    ny += (uniform_int_distribution<int>(0, 1)(rng) ? 1 : -1);
+                    if (nx < ox) nx = ox; if (nx > ox + W) nx = ox + W;
+                    if (ny < oy) ny = oy; if (ny > oy + H) ny = oy + H;
+                }
+                return {nx, ny};
+            }
+            // fall through to the plain Gaussian walk
+        }
+
         ll dx = (ll)llround(nd(rng));
         ll dy = (ll)llround(nd(rng));
         ll nx = pos[v].x + dx;
@@ -1547,6 +1701,8 @@ public:
     void commitMove(const MovePlan& plan) {
         // grid: incident edges change cells.
         const auto& incidents = nodeEdges[plan.v];
+        gcx += (double)(plan.newPos.x - plan.oldPos.x) / max(1, n);
+        gcy += (double)(plan.newPos.y - plan.oldPos.y) / max(1, n);
         for (int i : incidents) grid.removeEdge(i);
         occupied.erase(plan.oldPos);
         pos[plan.v] = plan.newPos;
@@ -1661,6 +1817,201 @@ public:
         return true;
     }
 
+    // ----- crossing-informed candidate generation ---------------------
+    // The best-of-C benefit analysis is only as good as its hypotheses:
+    // C iid Gaussian draws waste planMove budget re-testing the same blind
+    // direction. With candsMix on, each candidate slot tests a DIFFERENT
+    // crossing-derived hypothesis; the exact planMove evaluation then picks
+    // the winner. Slots:
+    //   0  Gaussian walk (exploration baseline; global-jump rules apply)
+    //   1  hot-edge shrink — pull v toward the mate of its most-crossed
+    //      incident edge; a shorter edge sweeps less area
+    //   2  random-subset neighbour centroid (local density hypothesis)
+    //   3  partner-side reflection — mirror v across the line of the hottest
+    //      crossing partner of v's hottest edge: the side switch geometrically
+    //      removes that crossing (planMove verifies the collateral)
+    bool candsMix = false;
+
+    int hottestIncident(int v) const {
+        const auto& inc = nodeEdges[v];
+        if (inc.empty()) return -1;
+        int e = inc[0];
+        for (int e2 : inc) if (xc[e2] > xc[e]) e = e2;
+        return e;
+    }
+
+    Pt jitterClamp(double tx, double ty, double sig) {
+        normal_distribution<double> nd(0.0, max(1.0, sig));
+        ll nx = (ll)llround(tx + nd(rng));
+        ll ny = (ll)llround(ty + nd(rng));
+        if (nx < ox) nx = ox; if (nx > ox + W) nx = ox + W;
+        if (ny < oy) ny = oy; if (ny > oy + H) ny = oy + H;
+        return {nx, ny};
+    }
+
+    // Snap a proposal to the current annealed grid: cell centre plus a small
+    // jitter (grid-aligned points would otherwise pile onto shared lines and
+    // trip the vertex-on-edge validity check). No-op once cells are fine.
+    Pt gridSnap(Pt p) {
+        ll gs = gridStep;
+        if (!gridAnneal || gs <= 2) return p;
+        ll half = gs / 2, jr = max<ll>(1, gs / 4);
+        ll x = ox + ((p.x - ox) / gs) * gs + half
+                 + (ll)(rng() % (uint64_t)jr) - jr / 2;
+        ll y = oy + ((p.y - oy) / gs) * gs + half
+                 + (ll)(rng() % (uint64_t)jr) - jr / 2;
+        if (x < ox) x = ox; if (x > ox + W) x = ox + W;
+        if (y < oy) y = oy; if (y > oy + H) y = oy + H;
+        return {x, y};
+    }
+
+    // Reflect v across the line of edge f (+ jitter); ok=false when f is
+    // degenerate. Shared by the two reflection slots in proposeCandidate.
+    Pt reflectAcross(int v, int f, double sigma, bool& ok) {
+        ok = false;
+        const Pt& a = pos[edges[f].u];
+        const Pt& b = pos[edges[f].v];
+        double abx = (double)(b.x - a.x), aby = (double)(b.y - a.y);
+        double len2 = abx * abx + aby * aby;
+        if (len2 < 1.0) return pos[v];
+        double apx = (double)(pos[v].x - a.x);
+        double apy = (double)(pos[v].y - a.y);
+        double t   = (apx * abx + apy * aby) / len2;
+        double fx  = a.x + t * abx, fy = a.y + t * aby;
+        ok = true;
+        return jitterClamp(2.0 * fx - pos[v].x, 2.0 * fy - pos[v].y,
+                           sigma * 0.25);
+    }
+
+    Pt proposeCandidate(int v, int slot, double T, double initT) {
+        double scale = sqrt((double)max<ll>(1, W) * (double)max<ll>(1, H));
+        double tFrac = (initT > 0) ? T / initT : 1.0;
+        if (tFrac < 0.01) tFrac = 0.01;
+        if (tFrac > 1.0)  tFrac = 1.0;
+        double sigma = max(1.0, scale * (0.005 + 0.05 * tFrac));
+
+        int e = (slot == 1 || slot == 3) ? hottestIncident(v) : -1;
+        switch (slot & 3) {
+            case 1: {                       // hot-edge shrink toward the mate
+                if (e < 0) break;
+                int u = (edges[e].u == v) ? edges[e].v : edges[e].u;
+                double t = 0.25 + 0.5 *
+                    uniform_real_distribution<double>(0, 1)(rng);
+                double tx = pos[v].x + t * (double)(pos[u].x - pos[v].x);
+                double ty = pos[v].y + t * (double)(pos[u].y - pos[v].y);
+                return jitterClamp(tx, ty, sigma * 0.25);
+            }
+            case 2: {                       // centroid OR random-partner reflect
+                // 50/50: random-subset neighbour centroid (arm-forming pull)
+                // or reflection across a RANDOM crossing partner (diversity
+                // for the top ΔlocalK move type — see slot 3's note).
+                if (uniform_int_distribution<int>(0, 1)(rng) == 0) {
+                    int eh = hottestIncident(v);
+                    if (eh >= 0 && xs[eh].size() > 0) {
+                        int pick = uniform_int_distribution<int>(
+                            0, (int)xs[eh].size() - 1)(rng);
+                        int f = *(xs[eh].begin() + pick);
+                        bool ok = false;
+                        Pt p = reflectAcross(v, f, sigma, ok);
+                        if (ok) return p;
+                    }
+                }
+                const auto& inc = nodeEdges[v];
+                if (inc.size() < 2) break;
+                int deg = (int)inc.size();
+                int cnt = uniform_int_distribution<int>(2, deg)(rng);
+                double sx = 0, sy = 0;
+                for (int t = 0; t < cnt; t++) {
+                    int e2 = inc[uniform_int_distribution<int>(0, deg - 1)(rng)];
+                    int u  = (edges[e2].u == v) ? edges[e2].v : edges[e2].u;
+                    sx += (double)pos[u].x; sy += (double)pos[u].y;
+                }
+                return jitterClamp(sx / cnt, sy / cnt, sigma * 0.35);
+            }
+            case 3: {                       // partner-side reflection
+                // Move-log analysis (2026-07, 05/06/08 warm+cold): reflection
+                // has the highest share of localK-lowering accepts of all
+                // slots (9-17% vs gauss 3-11%), so it earns two flavours:
+                // slot 3 reflects across the HOTTEST crossing partner, and
+                // slot 2 (below) alternates centroid with a RANDOM partner.
+                if (e < 0 || xs[e].size() == 0) break;
+                int f = -1;
+                for (int f2 : xs[e]) if (f < 0 || xc[f2] > xc[f]) f = f2;
+                if (f < 0) break;
+                bool ok = false;
+                Pt p = reflectAcross(v, f, sigma, ok);
+                if (ok) return p;
+                break;
+            }
+        }
+        return selectPlace(v, T, initT, /*localOnly*/ true);
+    }
+
+    // ----- coupled edge-translation move ------------------------------
+    // Single-vertex moves cannot rescue a bottleneck edge whose BOTH
+    // endpoints sit in locally-good positions while the edge itself sweeps
+    // a congested region — any one-endpoint move first makes things worse,
+    // so the walk never finds the two-step escape. Translating both
+    // endpoints by the same delta moves the edge as a rigid segment.
+    // Realised as two exact single-vertex moves (planMove/commitMove keep
+    // every incremental structure in sync — the attemptSwap pattern); on
+    // reject or invalidity the translation is replayed in reverse.
+    // Returns true iff the move was attempted.
+    bool attemptEdgeMove(int e, double sigma, int phase, double currentTemp,
+                         MovePlan& plan) {
+        int u = edges[e].u, v = edges[e].v;
+        Pt U = pos[u], V = pos[v];
+        normal_distribution<double> nd(0.0, sigma);
+        ll dx = (ll)llround(nd(rng));
+        ll dy = (ll)llround(nd(rng));
+        if (dx == 0 && dy == 0) dx = 1;
+        auto shift = [&](const Pt& p) {
+            Pt q{p.x + dx, p.y + dy};
+            if (q.x < ox) q.x = ox; if (q.x > ox + W) q.x = ox + W;
+            if (q.y < oy) q.y = oy; if (q.y > oy + H) q.y = oy + H;
+            return q;
+        };
+        Pt NU = shift(U), NV = shift(V);
+        if ((NU == U && NV == V) || NU == NV) return false;
+        {   // both landing spots must be free (of anyone but u/v themselves)
+            auto itu = occupied.find(NU);
+            if (itu != occupied.end() && itu->second != u && itu->second != v)
+                return false;
+            auto itv = occupied.find(NV);
+            if (itv != occupied.end() && itv->second != u && itv->second != v)
+                return false;
+        }
+
+        ll  totalX0 = totalX;
+        int kVal0   = kVal;
+
+        planMove(u, NU, plan); commitMove(plan);
+        planMove(v, NV, plan); commitMove(plan);
+
+        ll  dCross   = totalX - totalX0;
+        int dGlobalK = kVal - kVal0;
+
+        bool valid = !wouldCauseVertexEdgeOverlapFast(u, NU) &&
+                     !wouldCauseVertexEdgeOverlapFast(v, NV);
+
+        double dE;
+        if (phase == 1)         dE = (double)dCross;
+        else if (dGlobalK != 0) dE = (double)dGlobalK;
+        else                    dE = (double)dCross /
+                                     max(1.0, (double)max<ll>(1, totalX));
+
+        bool acc = valid && acceptByRule(dE, currentTemp);
+        if (moveLog && phase == 2)
+            moveLogRecord(u, /*slot*/9, acc, dGlobalK, dCross, U, NU);
+        if (acc) {
+            if (kVal < bestK || (kVal == bestK && totalX < bestX)) saveBest();
+            return true;
+        }
+        planMove(v, V, plan); commitMove(plan);
+        planMove(u, U, plan); commitMove(plan);
+        return true;
+    }
+
     // ----- deterministic k-repair pass --------------------------------
     // Vertex-movement primitive (Radermacher et al., JEA 2019): for the
     // endpoints of edges sitting at the bottleneck level k, evaluate a
@@ -1741,6 +2092,7 @@ public:
         // selection. Phase 1 minimises total crossings; keep the broad weighting.
         selKBand = (phase == 2 && kBand >= 0) ? kBand : -1;
         rebuildCum();
+        if (phase == 2) { moveLogOpen(); recomputeCenter(); }
 
         auto elapsed = [&] {
             return duration_cast<duration<double>>(
@@ -1749,6 +2101,16 @@ public:
 
         long long moves = 0, accepts = 0;
         double startingTemp = initT;
+
+        // Grid-anneal schedule: start at ~min(W,H)/64 (power of two), halve
+        // once per equal slice of the phase budget until cell size 1.
+        ll  gaStep0  = 1;
+        int gaLevels = 1;
+        if (gridAnneal) {
+            ll target = max<ll>(4, min(W, H) / 64);
+            while (gaStep0 < target) { gaStep0 <<= 1; gaLevels++; }
+        }
+        gridStep = gaStep0;
         double repairSpent  = 0.0;
         int    lastBestK    = bestK;   // reheat bookkeeping
         int    staleWaves   = 0;
@@ -1769,9 +2131,58 @@ public:
              << "  budget=" << timeLimitSec << "s"
              << "  initial k=" << kVal << " totalX=" << totalX << "\n";
 
-        MovePlan plan;
+        MovePlan plan, planBest;
         plan.pairChanges.reserve(256);
         plan.edgeCounts .reserve(256);
+        planBest.pairChanges.reserve(256);
+        planBest.edgeCounts .reserve(256);
+
+        // Phase fitness of a planned move (shared by the single-proposal path
+        // and the best-of-C benefit analysis below).
+        auto fitOf = [&](const MovePlan& pl) -> double {
+            if (phase == 1) return (double)pl.dCross;
+            if (fitSq) {
+                // Squared-crossings fitness: dE = sum(newC^2 - oldC^2),
+                // normalised so that +-1 crossing on a bottleneck-level
+                // edge costs ~1 (comparable to the dLocalK unit below).
+                double dsq = 0.0;
+                for (auto& ec : pl.edgeCounts) {
+                    double oldC = (double)std::get<1>(ec);
+                    double newC = (double)std::get<2>(ec);
+                    dsq += newC * newC - oldC * oldC;
+                }
+                return dsq / max(1.0, 2.0 * (double)kVal);
+            }
+            int dLocalK = pl.newLocalK - pl.oldLocalK;
+            if (dLocalK != 0) return (double)dLocalK;
+            // Lexicographic middle objective: before k itself can drop,
+            // every edge sitting at the bottleneck level k must lose a
+            // crossing. Pricing one of the cntPerK[k] top-level edges at
+            // 1/cntPerK[k] makes clearing the whole level worth ~1 unit of k.
+            int dTop = 0;
+            if (lexK) {
+                for (auto& ec : pl.edgeCounts) {
+                    int oldC = std::get<1>(ec);
+                    int newC = std::get<2>(ec);
+                    dTop += (int)(newC >= kVal) - (int)(oldC >= kVal);
+                }
+            }
+            if (dTop != 0) return (double)dTop / max(1, cntPerK[kVal]);
+            if (fitSq2) {
+                // k-neutral tie-break by squared-crossings delta: among moves
+                // that don't touch the bottleneck, prefer ones that unload
+                // high-crossing edges.
+                double dsq = 0.0;
+                for (auto& ec : pl.edgeCounts) {
+                    double oldC = (double)std::get<1>(ec);
+                    double newC = (double)std::get<2>(ec);
+                    dsq += newC * newC - oldC * oldC;
+                }
+                return dsq / max(1.0, 2.0 * (double)kVal *
+                                      (double)max<ll>(1, totalX));
+            }
+            return (double)pl.dCross / max(1.0, (double)max<ll>(1, totalX));
+        };
 
         auto reportTime = [&](double currentTemp) {
             cerr << "  [phase " << phase << "] t=" << (int)elapsed()
@@ -1801,85 +2212,110 @@ public:
         while (kVal > 0 && startingTemp > tLim && elapsed() < timeLimitSec) {
             double currentTemp = startingTemp;
             while (kVal > 0 && currentTemp > tLim && elapsed() < timeLimitSec) {
-                int v       = selectNode();
-                Pt  newPos  = selectPlace(v, currentTemp, initT, phase == 2);
-                if (newPos == pos[v]) { currentTemp *= decT; continue; }
-                // Forbid two distinct nodes sharing the same point.
-                {
-                    auto it = occupied.find(newPos);
-                    if (it != occupied.end() && it->second != v) {
-                        // Occupied: optionally turn the otherwise-wasted
-                        // proposal into a coupled swap with the occupant.
-                        if (swapMove)
-                            attemptSwap(v, it->second, phase, currentTemp, plan);
-                        moves++;
+                int v = selectNode();
+
+                if (gridAnneal) {
+                    int shift = (int)(gaLevels *
+                                      (elapsed() / max(1e-9, timeLimitSec)));
+                    if (shift >= gaLevels) shift = gaLevels - 1;
+                    gridStep = max<ll>(1, gaStep0 >> shift);
+                }
+
+                // Coupled edge translation: selectNode is already biased to
+                // bottleneck vertices; ride that bias and shift v's hottest
+                // incident edge as a rigid segment.
+                if (phase == 2 && edgeMoveP > 0 && !nodeEdges[v].empty() &&
+                    (int)(rng() % 100) < edgeMoveP) {
+                    int eHot = nodeEdges[v][0];
+                    for (int e : nodeEdges[v])
+                        if (xc[e] > xc[eHot]) eHot = e;
+                    double scale = sqrt((double)max<ll>(1, W) *
+                                        (double)max<ll>(1, H));
+                    double tFrac = (initT > 0) ? currentTemp / initT : 1.0;
+                    if (tFrac < 0.01) tFrac = 0.01;
+                    if (tFrac > 1.0)  tFrac = 1.0;
+                    double sigma = max(1.0, scale * (0.005 + 0.05 * tFrac));
+                    attemptEdgeMove(eHot, sigma, phase, currentTemp, plan);
+                    moves++;
+                    currentTemp *= decT;
+                    continue;
+                }
+
+                int C = (phase == 2) ? candsP2 : candsP1;
+                if (candsRamp && C > 1) {
+                    double fr = elapsed() / max(1e-9, timeLimitSec);
+                    if      (fr < 0.30) C = 1;
+                    else if (fr < 0.60) C = (C + 1) / 2;
+                }
+
+                MovePlan* act = nullptr;   // the plan fed to the accept rule
+                double dE = 0.0;
+                int actSlot = -1;          // instrumentation: winning proposal slot
+
+                if (C <= 1) {
+                    Pt newPos = gridSnap(selectPlace(v, currentTemp, initT,
+                                                     phase == 2));
+                    if (newPos == pos[v]) { currentTemp *= decT; continue; }
+                    // Forbid two distinct nodes sharing the same point.
+                    {
+                        auto it = occupied.find(newPos);
+                        if (it != occupied.end() && it->second != v) {
+                            // Occupied: optionally turn the otherwise-wasted
+                            // proposal into a coupled swap with the occupant.
+                            if (swapMove)
+                                attemptSwap(v, it->second, phase, currentTemp, plan);
+                            moves++;
+                            currentTemp *= decT; continue;
+                        }
+                    }
+                    // Forbid layouts where a vertex lies strictly on an edge
+                    // it is not incident to (vertex-edge overlap is invalid for
+                    // GD-contest scoring: crossings on that edge are ill-defined).
+                    if (wouldCauseVertexEdgeOverlapFast(v, newPos)) {
                         currentTemp *= decT; continue;
                     }
-                }
-                // Forbid layouts where a vertex lies strictly on an edge
-                // it is not incident to (vertex-edge overlap is invalid for
-                // GD-contest scoring: crossings on that edge are ill-defined).
-                if (wouldCauseVertexEdgeOverlapFast(v, newPos)) {
-                    currentTemp *= decT; continue;
-                }
-
-                planMove(v, newPos, plan);
-
-                double dE;
-                if (phase == 1) {
-                    dE = (double)plan.dCross;
-                } else if (fitSq) {
-                    // Squared-crossings fitness: dE = sum(newC^2 - oldC^2),
-                    // normalised so that +-1 crossing on a bottleneck-level
-                    // edge costs ~1 (comparable to the dLocalK unit below).
-                    double dsq = 0.0;
-                    for (auto& ec : plan.edgeCounts) {
-                        double oldC = (double)std::get<1>(ec);
-                        double newC = (double)std::get<2>(ec);
-                        dsq += newC * newC - oldC * oldC;
-                    }
-                    dE = dsq / max(1.0, 2.0 * (double)kVal);
+                    planMove(v, newPos, plan);
+                    dE  = fitOf(plan);
+                    act = &plan;
                 } else {
-                    int  dLocalK = plan.newLocalK - plan.oldLocalK;
-                    if (dLocalK != 0) dE = (double)dLocalK;
-                    else {
-                        // Lexicographic middle objective: before k itself can
-                        // drop, every edge sitting at the bottleneck level k
-                        // must lose a crossing. Pricing one of the cntPerK[k]
-                        // top-level edges at 1/cntPerK[k] makes clearing the
-                        // whole level worth ~1, i.e. one unit of k.
-                        int dTop = 0;
-                        if (lexK) {
-                            for (auto& ec : plan.edgeCounts) {
-                                int oldC = std::get<1>(ec);
-                                int newC = std::get<2>(ec);
-                                dTop += (int)(newC >= kVal) - (int)(oldC >= kVal);
-                            }
+                    // Benefit analysis: plan C candidate positions exactly and
+                    // keep only the best dE. Each move costs C planMove()s but
+                    // lands far more often — the acceptance rule then gates the
+                    // *best* available local move, not a blind sample. The
+                    // vertex-edge validity check is deferred to the winner so
+                    // its cost is paid once per move, not per candidate.
+                    bool found = false;
+                    for (int c = 0; c < C; c++) {
+                        Pt p = gridSnap((candsMix && phase == 2)
+                                   ? proposeCandidate(v, c, currentTemp, initT)
+                                   : selectPlace(v, currentTemp, initT, phase == 2));
+                        if (p == pos[v]) continue;
+                        auto it = occupied.find(p);
+                        if (it != occupied.end() && it->second != v) continue;
+                        planMove(v, p, plan);
+                        double e = fitOf(plan);
+                        if (!found || e < dE) {
+                            found = true; dE = e;
+                            actSlot = (candsMix && phase == 2) ? c : -1;
+                            std::swap(plan, planBest);
                         }
-                        if (dTop != 0)
-                            dE = (double)dTop / max(1, cntPerK[kVal]);
-                        else if (fitSq2) {
-                            // k-neutral tie-break by squared-crossings delta:
-                            // among moves that don't touch the bottleneck,
-                            // prefer ones that unload high-crossing edges.
-                            double dsq = 0.0;
-                            for (auto& ec : plan.edgeCounts) {
-                                double oldC = (double)std::get<1>(ec);
-                                double newC = (double)std::get<2>(ec);
-                                dsq += newC * newC - oldC * oldC;
-                            }
-                            dE = dsq / max(1.0, 2.0 * (double)kVal *
-                                                (double)max<ll>(1, totalX));
-                        } else
-                            dE = (double)plan.dCross /
-                                 max(1.0, (double)max<ll>(1, totalX));
                     }
+                    if (!found) { moves++; currentTemp *= decT; continue; }
+                    if (wouldCauseVertexEdgeOverlapFast(v, planBest.newPos)) {
+                        moves++; currentTemp *= decT; continue;
+                    }
+                    act = &planBest;
                 }
 
                 bool acc = acceptByRule(dE, currentTemp);
 
+                if (phase == 2 && moveLog)
+                    moveLogRecord(v, actSlot, acc,
+                                  act->newLocalK - act->oldLocalK,
+                                  act->dCross, act->oldPos, act->newPos);
+
                 if (acc) {
-                    commitMove(plan);
+                    commitMove(*act);
                     accepts++;
                     if (kVal < bestK ||
                         (kVal == bestK && totalX < bestX)) {
@@ -1972,6 +2408,14 @@ static void printUsage(const char* prog) {
         "             (default: 0 — hurts dense graphs)\n"
         "  --krepair 0|1 deterministic vertex-move polish of bottleneck edges\n"
         "             between phase-2 waves (default: 0)\n"
+        "  --cands N     phase-2 best-of-N benefit analysis: plan N candidate\n"
+        "                positions per move, accept-test only the best (default: 1)\n"
+        "  --cands1 N    same for phase 1 (default: 1)\n"
+        "  --cands-ramp 0|1  ramp C up over the phase budget: 1 -> C/2 -> C at\n"
+        "                30%%/60%% elapsed — volume early, quality late (default: 0)\n"
+        "  --place MODE  proposal: gauss|cong|bary|smart (default: gauss;\n"
+        "                smart = neighbour-informed mixture: random-subset centroid,\n"
+        "                near-neighbour, two-neighbour midpoint)\n"
         "  --init MODE  initial layout: auto|input|bfs (default: auto —\n"
         "               sample crossing density, keep input unless BFS snake is sparser)\n"
         "  --status-file PATH    write live status JSON to PATH\n"
@@ -1999,7 +2443,14 @@ int main(int argc, char** argv) {
     int    reheatArg = 0;     // phase-2 stagnation reheat, waves (0 = off)
     int    polishArg = 0;     // final deterministic k-repair polish (0 = off)
     string fitArg    = "k";   // phase-2 fitness: k (paper dual) | sq (xc^2)
-    string placeArg  = "gauss"; // proposal: gauss | cong (congestion-aware) | bary (barycenter-pull)
+    string placeArg  = "gauss"; // proposal: gauss | cong (congestion-aware) | bary (barycenter-pull) | smart (neighbour-informed mixture)
+    int    candsArg  = 1;     // phase-2 candidates per move (best-of-C benefit analysis)
+    int    cands1Arg = 1;     // phase-1 candidates per move
+    int    candsRampArg = 0;  // 1 = ramp C up over the phase budget (volume->quality)
+    int    edgeMoveArg  = 0;  // phase-2 % chance of a coupled edge-translation move
+    int    candsMixArg  = 0;  // 1 = crossing-informed candidate slots in best-of-C
+    string moveLogArg;        // path: phase-2 move benefit/harm instrumentation
+    int    gridAnnealArg = 0; // 1 = coarse-to-fine proposal quantisation
     string acceptArg = "metropolis"; // metropolis | threshold | lahc
     int    swapArg   = 0;     // 1 = enable coupled swap move on occupied hits
 
@@ -2025,6 +2476,13 @@ int main(int argc, char** argv) {
         else if (a == "--polish")            polishArg  = atoi(need("--polish"));
         else if (a == "--fit")               fitArg     = need("--fit");
         else if (a == "--place")             placeArg   = need("--place");
+        else if (a == "--cands")             candsArg   = atoi(need("--cands"));
+        else if (a == "--cands1")            cands1Arg  = atoi(need("--cands1"));
+        else if (a == "--cands-ramp")        candsRampArg = atoi(need("--cands-ramp"));
+        else if (a == "--edge-move")         edgeMoveArg  = atoi(need("--edge-move"));
+        else if (a == "--cands-mix")         candsMixArg  = atoi(need("--cands-mix"));
+        else if (a == "--move-log")          moveLogArg   = need("--move-log");
+        else if (a == "--grid-anneal")       gridAnnealArg = atoi(need("--grid-anneal"));
         else if (a == "--accept")            acceptArg  = need("--accept");
         else if (a == "--swap")              swapArg    = atoi(need("--swap"));
         else if (a == "--status-file")       statusFile = need("--status-file");
@@ -2056,7 +2514,15 @@ int main(int argc, char** argv) {
     solver.lexK           = (lexkArg != 0);
     solver.kRepair        = (krepairArg != 0);
     solver.reheatWaves    = reheatArg;
-    solver.placeMode      = (placeArg == "cong") ? 1 : (placeArg == "bary") ? 2 : 0;
+    solver.placeMode      = (placeArg == "cong") ? 1 : (placeArg == "bary") ? 2
+                          : (placeArg == "smart") ? 3 : 0;
+    solver.candsP2        = max(1, candsArg);
+    solver.candsP1        = max(1, cands1Arg);
+    solver.candsRamp      = (candsRampArg != 0);
+    solver.edgeMoveP      = max(0, min(90, edgeMoveArg));
+    solver.candsMix       = (candsMixArg != 0);
+    solver.moveLogFile    = moveLogArg;
+    solver.gridAnneal     = (gridAnnealArg != 0);
     solver.acceptMode     = (acceptArg == "threshold") ? 1
                           : (acceptArg == "lahc")      ? 2 : 0;
     solver.swapMove       = (swapArg != 0);

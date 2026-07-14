@@ -154,6 +154,42 @@ Etki sırasına göre:
 7. **Negatif sonuçlarıyla belgelenmiş deneyler:** `--lexk` ve `--krepair`
    (yukarıda) — ikisi de literatür destekli fikirlerdi, ikisi de kısa A/B
    testlerinde elendi ve bayrak arkasında tutuluyor.
+8. **Best-of-C fayda analizi (`--cands`, 2026-07):** her SA hamlesinde C aday
+   pozisyon üretilir, hepsinin ΔE'si `planMove` ile **tam** hesaplanır ve
+   yalnızca en iyisi kabul kuralına gider. Hamle sayısını C'ye böler ama hamle
+   kalitesi fazlasıyla telafi eder: internal-2026 warm A/B'lerinde k
+   11→9 (03), 235→226 (05), 228→224 (06), 82→80 (08); totalX %10-25 düştü.
+   C=4 tatlı nokta (C=8 daha iyi değil). `sa`/`sa-warm`/`sa-stress` kayıtlarına
+   `--cands 4` işlendi. Soğuk inişte hacim önemli olduğundan cold metotlar
+   ayrıca `--cands-ramp 1` alır (C: 1 → C/2 → C, faz bütçesi %30/%60 eşikleri).
+   `--place smart` (komşu-altkümesi centroid'i / komşu yanı / iki-komşu orta
+   noktası önerileri) totalX'i düşürür ama k'ya etkisi yok — bayrak arkasında.
+8b. **Hamle fayda/zarar enstrümantasyonu ve slot rekompozisyonu
+   (`--move-log`, 2026-07-10):** faz-2'de her değerlendirilen hamle loglanır
+   (slot, ΔlocalK, ΔX, mesafe, komşu-centroid/merkez yönelimi). 05/06/08
+   üzerinde 12 koşuluk analizin bulguları: kenar-taşıma değerlendirmelerin
+   ~%20'sini %1.5-8.5 kabulle yiyordu (→ %5'e indirildi); kesişme-türetilmiş
+   öneriler kör Gaussian'ı her metrikte geçiyor ve **partner-yansıması en
+   yüksek ΔlocalK-düşürücü** (%9-17) → yansıma slotu ikilendi (slot 2:
+   %50 centroid / %50 rastgele-partner yansıması). Kazandıran hamleler
+   komşu-centroid'e doğru (%57-61) ve uzun menzilli. Eşli-seed doğrulama:
+   05 202→200, gerileme yok.
+8c. **Tripod yapısal init (`bin/tripod_init`, 2026-07-10):** kazanan
+   layout ailesinin (üç kalın kol + üç kenar yelpazesi) doğrudan inşası —
+   normalize Laplacian'ın 2 küçük öz-vektöründe k-means ile 3-parça bölütleme,
+   köprü düğümler merkeze yakın, kollar 120°'de kama şeklinde. Hocanın
+   "instance yapısını istismar edin" notunun cisimleşmiş hali. Soğuk 10 dk:
+   05'te k 234→210 (aile rekoru); tripod-warm zincirleri 05=196 ve 06=202
+   rekorlarını kırdı. Orchestrator'da explore'un ikinci ailesi artık tripod;
+   cold-restart rotasyonu tripod→staged→sa-stress döngüsü.
+9. **Kesintisiz lease'ler (orchestrator, 2026-07):** xchg turları her turda
+   soğuma programını sıfırlıyordu; büyük graflarda (n+m ≥ 1000) 28 sn'lik
+   turlar faz 2'yi hiç soğutamıyor. Kanıt: instance_05'te tek 3 dakikalık
+   kesintisiz warm koşu (231→218), bir saatlik 4-turlu lease zincirini geçti.
+   Büyük graflar artık lease başına tek kesintisiz anneal koşar (worker'lar
+   lease'ler arası warm devriyle paylaşmaya devam eder); QMAX 120→240 sn;
+   ve `bid ∝ bestK` yüzünden aç kalan küçük graflara greedy öncesi bir
+   "ikinci lease garantisi" verildi.
 
 ---
 

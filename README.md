@@ -138,6 +138,14 @@ Classic single-node SA following the paper (Algorithm 1):
   with a 5 % chance of a global random jump in Phase 1.
 - **Wave restarts** — temperature is reset each wave; layout is restored from the
   best-known solution at the start of each wave.
+- **Best-of-C benefit analysis (`--cands C`, production methods use 4)** — each
+  move plans C candidate positions exactly (full `planMove` delta) and feeds only
+  the best ΔE to the acceptance rule. Trades move volume for move quality; wins
+  on every internal-2026 graph. `--cands-ramp 1` (used by cold starts) ramps C
+  as 1 → C/2 → C at 30 % / 60 % of the phase budget, since the early descent
+  prefers volume. `--place smart` adds neighbour-informed proposals
+  (random-subset centroid / near a random neighbour / two-neighbour midpoint);
+  it lowers totalX but not k, so it stays opt-in.
 
 Parameters (paper Table 1):
 
