@@ -127,6 +127,7 @@ struct GraphState {
     bool pollinateNext = false;  // alternates with true cold restarts
     std::string warm;
     int leases = 0, stalls = 0;
+    int warmLeases = 0;   // plain warm continuations run so far
     double lastDk = 0.0, lastDxf = 0.0;
     double spent = 0.0;
     bool done = false;
@@ -205,6 +206,17 @@ private:
             // 14). Starting in the winning basin hands the warm chain the
             // explore lease's ~100s and a 240s head start.
             if (entry.n + entry.m >= 1000) g.method0 = "tripod";
+            // The biggest SPARSE-ISH graphs open on GRADX (SigmoidX
+            // gradient-descent init): 10-min gate A/Bs put it far ahead of
+            // tripod there — 05: 183-187 vs 201, 06: 186/186 (record, ties
+            // the rival) vs 211, 08: 70/70 vs 75. instance_03 (n+m=1201)
+            // stays tripod (gate 11/11 vs stress path 10), and the density
+            // gate (m<=4n) keeps dense geometric graphs like instance_04
+            // (m/n=6.2, seed-17: gradx-open cost it its 31-32 band) on the
+            // tripod opener — SigmoidX has quadratically less room per pair
+            // on dense graphs.
+            if (entry.n + entry.m >= 2000 && entry.m <= 4 * entry.n)
+                g.method0 = "gradx";
             g.done = (entry.m == 0);
             if (entry.m == 0) { g.bestK = 0; g.warm = entry.path; }
             G[entry.name] = g;
@@ -289,8 +301,12 @@ private:
         // leases while the warm continuation that found 32 never ran).
         bool closable = g.target.has_value() && g.bestK.has_value() &&
                         *g.bestK - *g.target <= 3;
+        // Never family-rotate before the warm chain has run at least once:
+        // seed 17 let a dual-explore stall (dk=0 on the staged lease) push
+        // instance_05 straight into rotation while its gradx chain — the
+        // strongest asset of the hour (gate: 199 -> ~185) — never started.
         bool coldRestart = !cold && !closable && (g.n + g.m >= 1000) &&
-                           (g.stalls % 2 == 1);
+                           g.warmLeases >= 1 && (g.stalls % 2 == 1);
         // Cold restarts rotate through layout FAMILIES, not just seeds:
         // tripod (structural 3-arm init — 05/06 records), staged (LNS->SA,
         // sparser family — 08 records), then the force-directed method0.
@@ -385,6 +401,7 @@ private:
         }
         g.spent += wall;
         g.leases += 1;
+        if (method == "sa-warm" && !warm.empty()) g.warmLeases += 1;
         maxOverrun_ = std::max(maxOverrun_, wall - q);
         absorb(nm, g, bestW, method, wall, q, famUsed);
 
@@ -501,6 +518,27 @@ private:
             });
             if (!starved.empty()) log("=== SECOND-LEASE guarantee ===");
             for (auto& [nm, gp] : starved) {
+                if (remaining() < LEASE_FLOOR) break;
+                lease(nm, *gp);
+            }
+        }
+        // WARM-CHAIN guarantee: every large graph gets one warm continuation
+        // before the auction. Seed 17: instance_05's gradx explore hit 199
+        // (best explore ever) and then lost every auction on its small
+        // gap-to-target — 340s total while instance_06 burned 820s at a
+        // plateau. The chain lease is where the init families pay off; it
+        // must not depend on winning a bid.
+        {
+            std::vector<std::pair<std::string,GraphState*>> chainless;
+            for (auto& [nm, g] : G_)
+                if (!g.done && g.n + g.m >= 1000 && g.warmLeases == 0 &&
+                    !g.warm.empty())
+                    chainless.push_back({nm, &g});
+            std::sort(chainless.begin(), chainless.end(), [](auto& a, auto& b) {
+                return a.second->bestK.value_or(0) > b.second->bestK.value_or(0);
+            });
+            if (!chainless.empty()) log("=== WARM-CHAIN guarantee ===");
+            for (auto& [nm, gp] : chainless) {
                 if (remaining() < LEASE_FLOOR) break;
                 lease(nm, *gp);
             }

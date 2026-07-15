@@ -54,6 +54,7 @@ inline std::string SAKGD()     { return ROOT() + "/bin/sakgd"; }
 inline std::string APPROACH1() { return ROOT() + "/bin/approach1"; }
 inline std::string STRESS_INIT() { return ROOT() + "/bin/stress_init"; }
 inline std::string TRIPOD_INIT() { return ROOT() + "/bin/tripod_init"; }
+inline std::string GRADX_INIT()  { return ROOT() + "/bin/gradx_init"; }
 
 // Mirrors Python pathlib's `root / sub`: an absolute `sub` replaces `root`
 // entirely rather than being appended to it.
@@ -289,10 +290,10 @@ inline std::optional<int> verifyK(const std::string& path) {
 // left out relative to the Python original.
 // --------------------------------------------------------------------- //
 struct Stage {
-    std::string bin;      // "sakgd" | "approach1" | "stress"
+    std::string bin;      // "sakgd" | "approach1" | "stress" | "tripod" | "gradx"
     std::string mode;     // approach1 --mode value (empty = none / plain sakgd)
     std::string tag;      // multi-stage file/log tag
-    std::string frac;     // "full" | "lns" | "init" | "rest"
+    std::string frac;     // "full" | "lns" | "init" | "flash" | "rest"
     bool warm = false;    // true: input is the previous stage's output
     std::string initmode; // --init override
     std::vector<std::string> extra;
@@ -363,6 +364,24 @@ inline const std::vector<MethodSpec>& METHODS() {
             {"sakgd", "", "sa", "rest", true, "",
              {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
               "--cands-mix", "1", "--bandit", "1"}},
+        }},
+        // Gradx: gradient descent on the SigmoidX differentiable crossing
+        // surrogate (arXiv 2606.31119 sec 3.3) with a local-k softmax
+        // curriculum — see src/tools/gradx_init.cpp. Gate A/B (10-min SA
+        // from the init): 05 = 183/183 (all-time record, tripod control
+        // 201), 06 = 195/196 (control 211). The init stage needs real
+        // seconds (frac "init" = 0.08, not "flash"). The SA stage must NOT
+        // run phase 1: gradx layouts are already crossing-sparse and the
+        // hot totalX anneal wrecks them — initmode "input" keeps the
+        // coordinates, and the trailing "-p1 0" overrides the p1Frac the
+        // runner injects (sakgd arg parsing is last-wins).
+        {"gradx", "SA (gradx init)", 2, {
+            // --threads 2: eight cooperative workers each spawn their own
+            // gradx_init; 8x2 saturates the machine without thrashing.
+            {"gradx", "", "init", "init", false, "", {"--threads", "2"}},
+            {"sakgd", "", "sa", "rest", true, "input",
+             {"--cands", "4", "--edge-move", "5", "--cands-mix", "1",
+              "--bandit", "1", "-p1", "0"}},
         }},
         {"staged", "Staged", 2, {
             {"approach1", "lns", "lns", "lns", false, "", {}},
@@ -446,6 +465,11 @@ inline RunMethodResult runMethod(const MethodSpec& spec, const std::string& gpat
                    "-t", fmtFixed1(stageMin * 60.0)};
         } else if (st.bin == "tripod") {
             cmd = {TRIPOD_INIT(), "-i", inp, "-o", out, "-s", std::to_string(seed)};
+            for (auto& e : st.extra) cmd.push_back(e);
+        } else if (st.bin == "gradx") {
+            // gradx honors -t (budget-adaptive epochs + stall early-exit).
+            cmd = {GRADX_INIT(), "-i", inp, "-o", out, "-s", std::to_string(seed),
+                   "-t", fmtFixed1(stageMin * 60.0)};
             for (auto& e : st.extra) cmd.push_back(e);
         } else {
             std::string binpath = (st.bin == "sakgd") ? SAKGD() : APPROACH1();

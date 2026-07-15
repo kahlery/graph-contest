@@ -21,7 +21,8 @@ BINB1    := $(BINDIR)/approach1_baseline
 
 # Contest tooling (batch runner, orchestrator, dashboard, stress-init) - see
 # src/common/engine.hpp for the shared graph/method registry they build on.
-TOOLS    := $(BINDIR)/stress_init $(BINDIR)/tripod_init $(BINDIR)/run_contest \
+TOOLS    := $(BINDIR)/stress_init $(BINDIR)/tripod_init $(BINDIR)/gradx_init \
+            $(BINDIR)/run_contest \
             $(BINDIR)/contest_orchestrate $(BINDIR)/server $(BINDIR)/bench_reheat_sharing
 
 .PHONY: all clean run debug approach1 baseline tools
@@ -44,6 +45,9 @@ $(BINDIR)/stress_init: src/tools/stress_init.cpp src/common/json.hpp src/common/
 
 $(BINDIR)/tripod_init: src/tools/tripod_init.cpp src/common/json.hpp | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+
+$(BINDIR)/gradx_init: src/tools/gradx_init.cpp src/common/json.hpp | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS) $(THREADLIBS)
 
 $(BINDIR)/run_contest: src/runner/run_contest.cpp src/common/engine.hpp | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS) $(THREADLIBS)
