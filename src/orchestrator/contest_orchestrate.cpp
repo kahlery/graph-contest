@@ -56,13 +56,14 @@ constexpr double DENSE_DENS   = 8.0;
 constexpr double LEASE_FLOOR  = 12.0;
 constexpr double OVERRUN      = 1.5;
 constexpr int    XCHG_ROUNDS  = 4;
-// NH_SIZE stays 12 for lease-time LNS. nh-size 8 wins OFFLINE (2026-07-08
-// 25-min staged sweep on instance_08: nh8 k=61 vs nh12 66/68 vs nh24 67) but
-// inside a 240s lease approach1 blows straight through its -t budget with
-// nh 8 (05: 680s, 08: 1086s per lease in corch_1783476249), wrecking the
-// hour's schedule (sum-k 608 vs 549). Until approach1's deadline handling
-// with small neighbourhoods is fixed, nh8 remains a manual deep-run recipe.
-constexpr int    NH_SIZE = 12, NH_CANDS = 64;
+// NH_SIZE 8: best LNS neighbourhood for the staged family (2026-07-08 sweep
+// on instance_08: nh8 k=61 vs nh12 66/68 vs nh24 67 — smaller neighbourhoods
+// build the sparser base the SA polish descends from). The corch_1783476249
+// "overrun" that got this reverted to 12 was a red herring: the machine
+// SLEPT mid-lease (04:26-04:56; child froze at t=30s, backstop fired on
+// wake). approach1 honours -t exactly when awake (repro: 84.03s on an 84s
+// budget). Run long/overnight sessions under `caffeinate -dims`.
+constexpr int    NH_SIZE = 8, NH_CANDS = 64;
 
 double clampd(double x, double lo, double hi) { return std::max(lo, std::min(hi, x)); }
 
@@ -116,6 +117,14 @@ struct GraphState {
     std::optional<int> target;   // --targets: bank budget once bestK <= target
     int altCold = 0;             // cold-restart family rotation index:
                                  // cycles tripod -> staged -> method0
+    // Cross-family pollination bookkeeping: best (k, layout) seen per cold
+    // FAMILY, plus which family produced the current warm chain. Every other
+    // stall-driven cold restart warm-starts from the strongest OTHER family
+    // instead of going fully cold — a stalled chain gets the competing
+    // basin's head start while true cold re-rolls keep the diversity.
+    std::map<std::string, std::pair<int, std::string>> famBest;
+    std::string chainFam;
+    bool pollinateNext = false;  // alternates with true cold restarts
     std::string warm;
     int leases = 0, stalls = 0;
     double lastDk = 0.0, lastDxf = 0.0;
@@ -271,8 +280,45 @@ private:
                                       ? std::string(FAMILIES[g.altCold % 3])
                                       : g.method0)
                                : "sa-warm";
-        if (coldRestart) g.altCold++;
         std::string warm = (cold || coldRestart) ? "" : g.warm;
+        // Cross-family pollination: every other stall-driven restart, if a
+        // DIFFERENT family holds a layout within 10% of the incumbent k,
+        // warm-continue from it instead of going fully cold — the stalled
+        // chain inherits the competing basin's head start.
+        std::string famUsed = cold ? (forceColdMethod.empty() ? g.method0
+                                                              : forceColdMethod)
+                            : coldRestart ? method
+                            : (g.chainFam.empty() ? g.method0 : g.chainFam);
+        if (coldRestart) {
+            if (g.pollinateNext) {
+                const std::string* alt = nullptr;
+                std::string altFam;
+                int altK = std::numeric_limits<int>::max();
+                for (auto& [fam, best] : g.famBest) {
+                    if (fam == g.chainFam) continue;
+                    if (!fileExists(best.second)) continue;
+                    if (best.first < altK &&
+                        (double)best.first <=
+                            1.10 * (double)g.bestK.value_or(best.first)) {
+                        altK   = best.first;
+                        alt    = &best.second;
+                        altFam = fam;
+                    }
+                }
+                if (alt) {
+                    method  = "sa-warm";
+                    warm    = *alt;
+                    famUsed = altFam;
+                    log("  " + nm + ": pollinate from " + altFam +
+                        " best k=" + std::to_string(altK));
+                } else {
+                    g.altCold++;   // no donor: true cold as usual
+                }
+            } else {
+                g.altCold++;
+            }
+            g.pollinateNext = !g.pollinateNext;
+        }
         // Chopping a lease into xchg rounds resets the SA cooling schedule
         // every q/xchg seconds. On big graphs that keeps phase 2 permanently
         // hot: the corch_1783421945 A/B showed one continuous 3-min descent
@@ -317,7 +363,7 @@ private:
         g.spent += wall;
         g.leases += 1;
         maxOverrun_ = std::max(maxOverrun_, wall - q);
-        absorb(nm, g, bestW, method, wall, q);
+        absorb(nm, g, bestW, method, wall, q, famUsed);
 
         std::string kStr = g.bestK.has_value() ? std::to_string(*g.bestK) : "None";
         log(std::string(buf) + " k=" + kStr);
@@ -325,7 +371,8 @@ private:
     }
 
     void absorb(const std::string& nm, GraphState& g, const std::optional<WorkerResult>& bestW,
-                const std::string& method, double wall, double q) {
+                const std::string& method, double wall, double q,
+                const std::string& famUsed = "") {
         auto coldFallback = [&] {
             if (g.warm.empty() && g.method0 != "sa") {
                 g.method0 = "sa";
@@ -340,6 +387,14 @@ private:
         if (!(v.has_value() && v->valid && nk.has_value() && v->k == nk.value())) {
             g.stalls++; coldFallback(); return;
         }
+        // Per-family record for cross-family pollination — kept even when the
+        // lease does not beat the overall incumbent (a family's own best can
+        // still seed a future pollination lease).
+        if (!famUsed.empty()) {
+            auto it = g.famBest.find(famUsed);
+            if (it == g.famBest.end() || nk.value() < it->second.first)
+                g.famBest[famUsed] = {nk.value(), bestW->outPath};
+        }
         auto ok = g.bestK;
         double ox = g.bestX.has_value() ? (double)*g.bestX : std::numeric_limits<double>::infinity();
         bool improvedK = !ok.has_value() || nk.value() < ok.value();
@@ -349,6 +404,7 @@ private:
             g.lastDxf = (ox != 0.0 && std::isfinite(ox) && nx.has_value() && (double)nx.value() < ox)
                        ? (ox - nx.value()) / ox : 0.0;
             g.bestK = nk; g.bestX = nx; g.warm = bestW->outPath;
+            if (!famUsed.empty()) g.chainFam = famUsed;
             g.stalls = 0;
             // bests.json keys are qualified as "<input-set>/<graph>__<method>" so
             // entries stay unambiguous once viewed alongside other sets in the GUI;

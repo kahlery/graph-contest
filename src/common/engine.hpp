@@ -319,6 +319,10 @@ inline const std::vector<MethodSpec>& METHODS() {
         // edge. Was 20; the 2026-07 move-log analysis (05/06/08, warm+cold)
         // showed it eating ~20% of evaluations at 1.5-8.5% acceptance and
         // ~0% localK-lowering share, at 2-4 planMove cost per attempt.
+        // "--bandit 1": credit-weighted slot sampling (localK-lowering accepts,
+        // sliding window). Broke two plateaus in the 2026-07-15 paired A/B:
+        // 05 warm 196 -> 192 (then chains to 188), 06 warm 202 -> 194,
+        // while control/drift/level-clear stayed flat. 08 indifferent (61).
         // "--cands-mix 1": the 4 candidate slots test distinct crossing-derived
         // hypotheses. Post-analysis composition: gauss walk / hot-edge shrink /
         // (subset centroid | random-partner reflect) / hottest-partner reflect —
@@ -327,17 +331,18 @@ inline const std::vector<MethodSpec>& METHODS() {
         {"sa", "SA", 2, {
             {"sakgd", "", "", "full", false, "",
              {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
-              "--cands-mix", "1"}},
+              "--cands-mix", "1", "--bandit", "1"}},
         }},
         {"sa-warm", "SA (warm cont.)", 2, {
             {"sakgd", "", "", "full", false, "input",
-             {"--cands", "4", "--edge-move", "5", "--cands-mix", "1"}},
+             {"--cands", "4", "--edge-move", "5", "--cands-mix", "1",
+              "--bandit", "1"}},
         }},
         {"sa-stress", "SA (stress init)", 2, {
             {"stress", "", "init", "init", false, "", {}},
             {"sakgd", "", "sa", "rest", true, "",
              {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
-              "--cands-mix", "1"}},
+              "--cands-mix", "1", "--bandit", "1"}},
         }},
         // Tripod: structural init exploiting the winning tripod layout
         // family (see src/tools/tripod_init.cpp). 10-min cold A/B on
@@ -347,7 +352,7 @@ inline const std::vector<MethodSpec>& METHODS() {
             {"tripod", "", "init", "flash", false, "", {}},
             {"sakgd", "", "sa", "rest", true, "",
              {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
-              "--cands-mix", "1"}},
+              "--cands-mix", "1", "--bandit", "1"}},
         }},
         {"staged", "Staged", 2, {
             {"approach1", "lns", "lns", "lns", false, "", {}},
@@ -447,6 +452,17 @@ inline RunMethodResult runMethod(const MethodSpec& spec, const std::string& gpat
             for (auto& e : st.extra) cmd.push_back(e);
         }
         auto [rc, sec] = runFn(cmd, log);
+        // Stage wall-vs-budget telemetry (appended to the stage's own log):
+        // an overrun here means the child ignored -t, the backstop misfired,
+        // or the machine dozed mid-stage (see corch_1783476249 post-mortem).
+        {
+            FILE* lf = fopen(log.c_str(), "a");
+            if (lf) {
+                fprintf(lf, "[stage] %s wall=%.1fs budget=%.1fs rc=%d\n",
+                        st.bin.c_str(), sec, stageMin * 60.0, rc);
+                fclose(lf);
+            }
+        }
         if (rcFinal == 0) rcFinal = rc;
         secTotal += sec;
         logs.push_back(log);

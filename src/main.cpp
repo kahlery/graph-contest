@@ -726,6 +726,33 @@ public:
                                     // bottleneck-ish incident edge shift by
                                     // one shared delta) instead of a single-
                                     // vertex proposal
+    bool           bandit = false;   // sample cands-mix slots by a sliding-
+                                    // window credit (localK-lowering accepts)
+                                    // instead of one-of-each; floors keep
+                                    // every hypothesis alive. Bounded upside
+                                    // (best-of-C already evaluates all four
+                                    // exactly) but auto-adapts on unseen
+                                    // graphs where the winning hypothesis
+                                    // mix is unknown.
+    double         slotCredit[4] = {1, 1, 1, 1};
+    long long      banditTick = 0;
+    int            banditSlot() {
+        double w[4], tot = 0;
+        for (int s = 0; s < 4; s++) {
+            w[s] = 0.15 + slotCredit[s];
+            tot += w[s];
+        }
+        double r = uniform_real_distribution<double>(0, tot)(rng);
+        for (int s = 0; s < 3; s++) { r -= w[s]; if (r < 0) return s; }
+        return 3;
+    }
+    bool           pairMove = false;  // edgeMoveP budget runs the coordinated
+                                    // two-endpoint move instead of rigid
+                                    // translation (see attemptPairMove)
+    bool           slot0Drift = false; // slot-0: drift walk instead of the
+                                    // blind Gaussian (see proposeCandidate)
+    bool           levelClear = false; // run the level-clearing sweep at each
+                                    // phase-2 budget-reheat (stagnation) point
     bool           gridAnneal = false; // coarse-to-fine proposal quantisation:
                                     // crossings depend only on the combinatorial
                                     // arrangement, so proposals finer than the
@@ -1892,6 +1919,33 @@ public:
 
         int e = (slot == 1 || slot == 3) ? hottestIncident(v) : -1;
         switch (slot & 3) {
+            case 0: {                       // drift walk (--slot0 drift)
+                // Move-log calibrated replacement for the blind Gaussian:
+                // improving accepts are LONG (median ~0.008*scale, p90
+                // ~0.04*scale), head toward the neighbour centroid (57-61%)
+                // and slightly inward. Propose exactly that: log-normal
+                // distance along the centroid direction (occasionally the
+                // layout core) with angular noise; the frozen-phase sigma
+                // survives only as the jitter floor.
+                if (!slot0Drift) break;     // default: plain selectPlace walk
+                double ncx, ncy;
+                if (uniform_real_distribution<double>(0, 1)(rng) < 0.2) {
+                    ncx = gcx; ncy = gcy;   // inward: layout centre of mass
+                } else {
+                    nbCentroid(v, ncx, ncy);
+                }
+                double ddx = ncx - pos[v].x, ddy = ncy - pos[v].y;
+                double baseAng = (ddx * ddx + ddy * ddy > 1.0)
+                    ? atan2(ddy, ddx)
+                    : uniform_real_distribution<double>(0, 2 * M_PI)(rng);
+                double ang = baseAng +
+                    normal_distribution<double>(0.0, 0.6)(rng);
+                normal_distribution<double> lnd(log(0.008 * scale), 1.1);
+                double d = exp(lnd(rng));
+                return jitterClamp(pos[v].x + d * cos(ang),
+                                   pos[v].y + d * sin(ang),
+                                   max(2.0, sigma * 0.1));
+            }
             case 1: {                       // hot-edge shrink toward the mate
                 if (e < 0) break;
                 int u = (edges[e].u == v) ? edges[e].v : edges[e].u;
@@ -2012,64 +2066,169 @@ public:
         return true;
     }
 
-    // ----- deterministic k-repair pass --------------------------------
-    // Vertex-movement primitive (Radermacher et al., JEA 2019): for the
-    // endpoints of edges sitting at the bottleneck level k, evaluate a
-    // sampled candidate set of positions exactly (via planMove) and commit
-    // the best strictly-improving one. Catches sure wins the probabilistic
-    // SA walk misses. Returns number of committed moves.
+    // ----- coordinated two-endpoint move -------------------------------
+    // Successor to the rigid edge translation (which the move-log showed at
+    // ~0% localK-lowering): near the plateau, single-endpoint moves on a
+    // bottleneck edge are often mutually blocked — each endpoint's best move
+    // only pays if the OTHER endpoint moves too. So: best-of-C plan endpoint
+    // u (own fitness), tentatively commit; best-of-C plan endpoint v; judge
+    // the JOINT delta off the global counters (attemptEdgeMove pattern) and
+    // revert both on reject/invalidity. Costs up to ~2C planMoves per
+    // attempt; runs on the edgeMoveP budget when pairMove is set.
+    bool attemptPairMove(int e, int phase, double currentTemp, MovePlan& plan) {
+        int u = edges[e].u, v = edges[e].v;
+        Pt U = pos[u], V = pos[v];
+        ll  totalX0 = totalX;
+        int kVal0   = kVal;
+
+        auto bestFor = [&](int w, Pt& out) -> bool {
+            bool found = false;
+            double bestE = 0;
+            for (int c = 0; c < max(2, candsP2); c++) {
+                Pt p = candsMix ? proposeCandidate(w, c, currentTemp, curInitT)
+                                : selectPlace(w, currentTemp, curInitT, true);
+                if (p == pos[w]) continue;
+                auto it = occupied.find(p);
+                if (it != occupied.end() && it->second != w) continue;
+                planMove(w, p, plan);
+                double fe = (phase == 1)
+                    ? (double)plan.dCross
+                    : (double)(plan.newLocalK - plan.oldLocalK) +
+                      (double)plan.dCross /
+                          max(1.0, (double)max<ll>(1, totalX));
+                if (!found || fe < bestE) { found = true; bestE = fe; out = p; }
+            }
+            return found;
+        };
+
+        Pt NU, NV;
+        if (!bestFor(u, NU)) return false;
+        planMove(u, NU, plan); commitMove(plan);
+        bool haveV = bestFor(v, NV);
+        if (haveV) { planMove(v, NV, plan); commitMove(plan); }
+
+        ll  dCross   = totalX - totalX0;
+        int dGlobalK = kVal - kVal0;
+        bool valid = !wouldCauseVertexEdgeOverlapFast(u, pos[u]) &&
+                     !wouldCauseVertexEdgeOverlapFast(v, pos[v]);
+
+        double dE;
+        if (phase == 1)         dE = (double)dCross;
+        else if (dGlobalK != 0) dE = (double)dGlobalK;
+        else                    dE = (double)dCross /
+                                     max(1.0, (double)max<ll>(1, totalX));
+
+        bool acc = valid && acceptByRule(dE, currentTemp);
+        if (moveLog && phase == 2)
+            moveLogRecord(u, /*slot*/8, acc, dGlobalK, dCross, U, pos[u]);
+        if (acc) {
+            if (kVal < bestK || (kVal == bestK && totalX < bestX)) saveBest();
+            return true;
+        }
+        if (haveV) { planMove(v, V, plan); commitMove(plan); }
+        planMove(u, U, plan); commitMove(plan);
+        return true;
+    }
+
+    // ----- deterministic level-clearing sweep --------------------------
+    // Vertex-movement primitive (Radermacher et al., JEA 2019), modernised
+    // 2026-07-11 with the move-log findings: at the plateau, k drops only
+    // when EVERY edge at the bottleneck level loses a crossing, and the
+    // moves that do that are reflections and long targeted jumps — not the
+    // blind gauss+uniform samples this pass used to draw. For each endpoint
+    // of every edge at level >= kVal-1:
+    //   - reflect across EACH crossing partner's line (deterministically
+    //     flips that pair's side; planMove prices the collateral),
+    //   - neighbour-centroid pulls (half and full),
+    //   - a few long log-normal jumps (calibrated to the improving-move
+    //     length distribution: median ~0.008*scale).
+    // Scored lexicographically (dLocalK, then bottleneck-level count dTop,
+    // then dCross); only strictly-improving commits, so k cannot rise.
+    // Returns number of committed moves.
     int kRepairPass(int maxEdges, int candsPerNode) {
         vector<int> top;
-        for (int e = 0; e < m; e++) if (xc[e] == kVal) top.push_back(e);
+        for (int e = 0; e < m; e++) if (xc[e] >= kVal - 1) top.push_back(e);
         shuffle(top.begin(), top.end(), rng);
         if ((int)top.size() > maxEdges) top.resize(maxEdges);
 
         MovePlan plan;
         int committed = 0;
         double scale = sqrt((double)max<ll>(1, W) * (double)max<ll>(1, H));
-        normal_distribution<double> nd(0.0, max(1.0, scale * 0.05));
+
+        struct Cand { int lk; int dtop; ll dx; Pt p; };
+        vector<Pt>   cands;
+        vector<Cand> ranked;
 
         for (int e : top) {
-            if (xc[e] != kVal) continue;        // may have improved already
+            if (xc[e] < kVal - 1) continue;     // may have improved already
             for (int v : {edges[e].u, edges[e].v}) {
-                Pt   curPos  = pos[v];
-                Pt   bestPos = curPos;
-                int  bestLK  = INT_MAX;
-                int  bestD   = INT_MAX;
-                int  oldLK   = -1;
-                for (int c = 0; c < candsPerNode; c++) {
-                    Pt p;
-                    if (c % 2 == 0) {           // local Gaussian candidate
-                        p.x = curPos.x + (ll)llround(nd(rng));
-                        p.y = curPos.y + (ll)llround(nd(rng));
-                    } else {                    // global uniform candidate
-                        p.x = uniform_int_distribution<ll>(ox, ox + W)(rng);
-                        p.y = uniform_int_distribution<ll>(oy, oy + H)(rng);
-                    }
-                    if (p.x < ox) p.x = ox; if (p.x > ox + W) p.x = ox + W;
-                    if (p.y < oy) p.y = oy; if (p.y > oy + H) p.y = oy + H;
+                Pt curPos = pos[v];
+                cands.clear();
+                // (a) reflection across every crossing partner of e
+                for (int f : xs[e]) {
+                    bool ok = false;
+                    Pt p = reflectAcross(v, f, scale * 0.004, ok);
+                    if (ok) cands.push_back(p);
+                }
+                // (b) neighbour-centroid pulls
+                double ncx, ncy;
+                nbCentroid(v, ncx, ncy);
+                for (double t : {0.5, 1.0})
+                    cands.push_back(jitterClamp(
+                        curPos.x + t * (ncx - curPos.x),
+                        curPos.y + t * (ncy - curPos.y), scale * 0.008));
+                // (c) long log-normal jumps toward random directions
+                int extra = min(8, max(2, candsPerNode - (int)cands.size()));
+                normal_distribution<double> lnd(log(0.008 * scale), 0.9);
+                for (int j = 0; j < extra; j++) {
+                    double d  = exp(lnd(rng));
+                    double an = uniform_real_distribution<double>(
+                                    0, 2 * M_PI)(rng);
+                    cands.push_back(jitterClamp(curPos.x + d * cos(an),
+                                                curPos.y + d * sin(an), 1.0));
+                }
+
+                // exact evaluation; keep a small ranked list so the deferred
+                // validity check is paid only for actual winners
+                ranked.clear();
+                int oldLK = -1;
+                for (const Pt& p : cands) {
                     if (p == curPos) continue;
-                    {
-                        auto it = occupied.find(p);
-                        if (it != occupied.end() && it->second != v) continue;
-                    }
-                    if (wouldCauseVertexEdgeOverlapFast(v, p)) continue;
+                    auto it = occupied.find(p);
+                    if (it != occupied.end() && it->second != v) continue;
                     planMove(v, p, plan);
                     oldLK = plan.oldLocalK;
-                    if (plan.newLocalK < bestLK ||
-                        (plan.newLocalK == bestLK && plan.dCross < bestD)) {
-                        bestLK  = plan.newLocalK;
-                        bestD   = plan.dCross;
-                        bestPos = p;
+                    int dtop = 0;
+                    for (auto& ec : plan.edgeCounts) {
+                        int oldC = std::get<1>(ec), newC = std::get<2>(ec);
+                        dtop += (int)(newC >= kVal) - (int)(oldC >= kVal);
                     }
+                    Cand c{plan.newLocalK, dtop, plan.dCross, p};
+                    auto worse = [](const Cand& a, const Cand& b) {
+                        if (a.lk   != b.lk)   return a.lk   > b.lk;
+                        if (a.dtop != b.dtop) return a.dtop > b.dtop;
+                        return a.dx > b.dx;
+                    };
+                    ranked.push_back(c);
+                    for (size_t i = ranked.size() - 1;
+                         i > 0 && worse(ranked[i - 1], ranked[i]); i--)
+                        std::swap(ranked[i - 1], ranked[i]);
+                    if (ranked.size() > 3) ranked.pop_back();
                 }
                 if (oldLK < 0) continue;
-                if (bestLK < oldLK || (bestLK == oldLK && bestD < 0)) {
-                    planMove(v, bestPos, plan);
+                for (const Cand& c : ranked) {
+                    bool improving =
+                        c.lk < oldLK ||
+                        (c.lk == oldLK && (c.dtop < 0 ||
+                                           (c.dtop == 0 && c.dx < 0)));
+                    if (!improving) break;      // ranked: rest are no better
+                    if (wouldCauseVertexEdgeOverlapFast(v, c.p)) continue;
+                    planMove(v, c.p, plan);
                     commitMove(plan);
                     committed++;
                     if (kVal < bestK || (kVal == bestK && totalX < bestX))
                         saveBest();
+                    break;
                 }
             }
         }
@@ -2229,13 +2388,18 @@ public:
                     int eHot = nodeEdges[v][0];
                     for (int e : nodeEdges[v])
                         if (xc[e] > xc[eHot]) eHot = e;
-                    double scale = sqrt((double)max<ll>(1, W) *
-                                        (double)max<ll>(1, H));
-                    double tFrac = (initT > 0) ? currentTemp / initT : 1.0;
-                    if (tFrac < 0.01) tFrac = 0.01;
-                    if (tFrac > 1.0)  tFrac = 1.0;
-                    double sigma = max(1.0, scale * (0.005 + 0.05 * tFrac));
-                    attemptEdgeMove(eHot, sigma, phase, currentTemp, plan);
+                    if (pairMove) {
+                        attemptPairMove(eHot, phase, currentTemp, plan);
+                    } else {
+                        double scale = sqrt((double)max<ll>(1, W) *
+                                            (double)max<ll>(1, H));
+                        double tFrac = (initT > 0) ? currentTemp / initT : 1.0;
+                        if (tFrac < 0.01) tFrac = 0.01;
+                        if (tFrac > 1.0)  tFrac = 1.0;
+                        double sigma = max(1.0,
+                                           scale * (0.005 + 0.05 * tFrac));
+                        attemptEdgeMove(eHot, sigma, phase, currentTemp, plan);
+                    }
                     moves++;
                     currentTemp *= decT;
                     continue;
@@ -2286,8 +2450,10 @@ public:
                     // its cost is paid once per move, not per candidate.
                     bool found = false;
                     for (int c = 0; c < C; c++) {
+                        int slotC = (bandit && candsMix && phase == 2)
+                                        ? banditSlot() : c;
                         Pt p = gridSnap((candsMix && phase == 2)
-                                   ? proposeCandidate(v, c, currentTemp, initT)
+                                   ? proposeCandidate(v, slotC, currentTemp, initT)
                                    : selectPlace(v, currentTemp, initT, phase == 2));
                         if (p == pos[v]) continue;
                         auto it = occupied.find(p);
@@ -2296,7 +2462,7 @@ public:
                         double e = fitOf(plan);
                         if (!found || e < dE) {
                             found = true; dE = e;
-                            actSlot = (candsMix && phase == 2) ? c : -1;
+                            actSlot = (candsMix && phase == 2) ? slotC : -1;
                             std::swap(plan, planBest);
                         }
                     }
@@ -2315,6 +2481,9 @@ public:
                                   act->dCross, act->oldPos, act->newPos);
 
                 if (acc) {
+                    if (bandit && actSlot >= 0 &&
+                        act->newLocalK < act->oldLocalK)
+                        slotCredit[actSlot & 3] += 1.0;
                     commitMove(*act);
                     accepts++;
                     if (kVal < bestK ||
@@ -2323,6 +2492,8 @@ public:
                     }
                 }
                 moves++;
+                if (bandit && (++banditTick & 4095) == 0)
+                    for (double& cscore : slotCredit) cscore *= 0.5;
                 currentTemp *= decT;
 
                 double el = elapsed();
@@ -2370,6 +2541,20 @@ public:
         // outer loop only exits when the time budget or k=0 is reached.
         if (kVal > 0 && startingTemp <= tLim && elapsed() < timeLimitSec) {
             restoreBest();
+            // Level-clearing sweep at the stagnation point: the walk is
+            // frozen and restored to the incumbent — exactly when the
+            // deterministic bottleneck sweep is cheapest to run and most
+            // likely to clear the last edges pinning the current k. Capped
+            // at ~10% of the phase's elapsed time (like inter-wave repair).
+            if (phase == 2 && levelClear &&
+                repairSpent < 0.10 * max(1.0, elapsed())) {
+                double rt0 = elapsed();
+                int c = kRepairPass(/*maxEdges*/64, /*candsPerNode*/8);
+                repairSpent += elapsed() - rt0;
+                if (c > 0)
+                    cerr << "  [phase 2] level-clear: " << c
+                         << " moves, k=" << kVal << " bestK=" << bestK << "\n";
+            }
             reheatCeil   = max(tLim * 8.0, reheatCeil * 0.5);
             startingTemp = reheatCeil;
             staleWaves   = 0;
@@ -2451,6 +2636,10 @@ int main(int argc, char** argv) {
     int    candsMixArg  = 0;  // 1 = crossing-informed candidate slots in best-of-C
     string moveLogArg;        // path: phase-2 move benefit/harm instrumentation
     int    gridAnnealArg = 0; // 1 = coarse-to-fine proposal quantisation
+    int    levelClearArg = 0; // 1 = level-clearing sweep at phase-2 stagnation
+    string slot0Arg = "gauss"; // slot-0 proposal: gauss | drift
+    int    pairMoveArg = 0;   // 1 = coordinated two-endpoint move on edgeMoveP budget
+    int    banditArg   = 0;   // 1 = credit-weighted cands-mix slot sampling
     string acceptArg = "metropolis"; // metropolis | threshold | lahc
     int    swapArg   = 0;     // 1 = enable coupled swap move on occupied hits
 
@@ -2483,6 +2672,10 @@ int main(int argc, char** argv) {
         else if (a == "--cands-mix")         candsMixArg  = atoi(need("--cands-mix"));
         else if (a == "--move-log")          moveLogArg   = need("--move-log");
         else if (a == "--grid-anneal")       gridAnnealArg = atoi(need("--grid-anneal"));
+        else if (a == "--level-clear")       levelClearArg = atoi(need("--level-clear"));
+        else if (a == "--slot0")             slot0Arg      = need("--slot0");
+        else if (a == "--pair-move")         pairMoveArg   = atoi(need("--pair-move"));
+        else if (a == "--bandit")            banditArg     = atoi(need("--bandit"));
         else if (a == "--accept")            acceptArg  = need("--accept");
         else if (a == "--swap")              swapArg    = atoi(need("--swap"));
         else if (a == "--status-file")       statusFile = need("--status-file");
@@ -2523,6 +2716,10 @@ int main(int argc, char** argv) {
     solver.candsMix       = (candsMixArg != 0);
     solver.moveLogFile    = moveLogArg;
     solver.gridAnneal     = (gridAnnealArg != 0);
+    solver.levelClear     = (levelClearArg != 0);
+    solver.slot0Drift     = (slot0Arg == "drift");
+    solver.pairMove       = (pairMoveArg != 0);
+    solver.bandit         = (banditArg != 0);
     solver.acceptMode     = (acceptArg == "threshold") ? 1
                           : (acceptArg == "lahc")      ? 2 : 0;
     solver.swapMove       = (swapArg != 0);

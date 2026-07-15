@@ -47,18 +47,33 @@ int main(int argc, char** argv) {
     string inPath, outPath;
     long long seed = 1;
     int ARMS = 3;
+    // Shape parameters (defaults = the recipe that set the 05/06 records).
+    double wedgeA = 0.05, wedgeB = 0.10;  // arm width: wedgeA*R + wedgeB*r
+    double rexp   = 1.1;                  // radius exponent along the arm
+    double core   = 0.06;                 // innermost radius fraction
+    double jitf   = 0.012;                // isotropic jitter (fraction of R)
+    string order  = "ext";                // core->tip ordering: ext|deg|hybrid
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
         auto need = [&] { return string(argv[++i]); };
-        if      (a == "-i")      inPath  = need();
-        else if (a == "-o")      outPath = need();
-        else if (a == "-s")      seed    = atoll(need().c_str());
-        else if (a == "--arms")  ARMS    = atoi(need().c_str());
-        else if (a == "-t")      (void)need();   // interface parity, unused
+        if      (a == "-i")       inPath  = need();
+        else if (a == "-o")       outPath = need();
+        else if (a == "-s")       seed    = atoll(need().c_str());
+        else if (a == "--arms")   ARMS    = atoi(need().c_str());
+        else if (a == "--wedge")  { string w = need();
+                                    sscanf(w.c_str(), "%lf,%lf", &wedgeA, &wedgeB); }
+        else if (a == "--rexp")   rexp    = atof(need().c_str());
+        else if (a == "--core")   core    = atof(need().c_str());
+        else if (a == "--jitter") jitf    = atof(need().c_str());
+        else if (a == "--order")  order   = need();
+        else if (a == "-t")       (void)need();   // interface parity, unused
         else { fprintf(stderr, "tripod_init: unknown arg %s\n", a.c_str()); return 2; }
     }
     if (inPath.empty() || outPath.empty()) {
-        fprintf(stderr, "usage: tripod_init -i in.json -o out.json [-s seed] [--arms N]\n");
+        fprintf(stderr,
+                "usage: tripod_init -i in.json -o out.json [-s seed] [--arms N]\n"
+                "       [--wedge a,b] [--rexp E] [--core F] [--jitter F]\n"
+                "       [--order ext|deg|hybrid]\n");
         return 2;
     }
     ARMS = max(2, min(8, ARMS));
@@ -195,12 +210,24 @@ int main(int argc, char** argv) {
         if (mem.empty()) continue;
         double ang = M_PI / 2 + 2.0 * M_PI * c / ARMS;
         double ux = cos(ang), uy = sin(ang);
-        sort(mem.begin(), mem.end(), [&](int a, int b) { return ext[a] > ext[b]; });
+        // core->tip ordering: bridging nodes (ext), hubs (deg), or a blend
+        if (order == "deg")
+            sort(mem.begin(), mem.end(),
+                 [&](int a, int b) { return deg[a] > deg[b]; });
+        else if (order == "hybrid")
+            sort(mem.begin(), mem.end(), [&](int a, int b) {
+                return ext[a] * sqrt(max(deg[a], 1.0)) >
+                       ext[b] * sqrt(max(deg[b], 1.0));
+            });
+        else
+            sort(mem.begin(), mem.end(),
+                 [&](int a, int b) { return ext[a] > ext[b]; });
         for (size_t rank = 0; rank < mem.size(); rank++) {
             int v = mem[rank];
-            double r = R * pow(0.06 + 0.94 * (rank + 0.5) / mem.size(), 1.1);
-            normal_distribution<double> perpd(0.0, 0.05 * R + 0.10 * r);
-            normal_distribution<double> jitd(0.0, 0.012 * R);
+            double r = R * pow(core + (1.0 - core) * (rank + 0.5) / mem.size(),
+                               rexp);
+            normal_distribution<double> perpd(0.0, wedgeA * R + wedgeB * r);
+            normal_distribution<double> jitd(0.0, jitf * R);
             double perp = perpd(rng);
             coord[v] = {cx + r * ux - perp * uy + jitd(rng),
                         cy + r * uy + perp * ux + jitd(rng)};
