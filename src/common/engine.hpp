@@ -354,9 +354,21 @@ inline const std::vector<MethodSpec>& METHODS() {
              {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
               "--cands-mix", "1", "--bandit", "1"}},
         }},
+        // Narrow-arm tripod: the 78-run param sweep found --wedge 0.02,0.06
+        // an instance_05-SPECIFIC win (cold 206/208 vs base 218/222); it is
+        // neutral on 06 and slightly negative on 08, so the orchestrator maps
+        // tripod -> tripod-n for instance_05 only.
+        {"tripod-n", "SA (tripod narrow)", 2, {
+            {"tripod", "", "init", "flash", false, "", {"--wedge", "0.02,0.06"}},
+            {"sakgd", "", "sa", "rest", true, "",
+             {"--cands", "4", "--cands-ramp", "1", "--edge-move", "5",
+              "--cands-mix", "1", "--bandit", "1"}},
+        }},
         {"staged", "Staged", 2, {
             {"approach1", "lns", "lns", "lns", false, "", {}},
-            {"sakgd", "", "sa", "rest", true, "", {}},
+            {"sakgd", "", "sa", "rest", true, "",
+             {"--cands", "4", "--edge-move", "5", "--cands-mix", "1",
+              "--bandit", "1"}},
         }},
         {"staged-adaptive", "Staged-Adaptive", 2, {
             {"approach1", "lns-adaptive", "lns", "lns", false, "", {}},
@@ -434,6 +446,7 @@ inline RunMethodResult runMethod(const MethodSpec& spec, const std::string& gpat
                    "-t", fmtFixed1(stageMin * 60.0)};
         } else if (st.bin == "tripod") {
             cmd = {TRIPOD_INIT(), "-i", inp, "-o", out, "-s", std::to_string(seed)};
+            for (auto& e : st.extra) cmd.push_back(e);
         } else {
             std::string binpath = (st.bin == "sakgd") ? SAKGD() : APPROACH1();
             cmd = {binpath, "-i", inp, "-o", out, "-t", minsFmt(stageMin),

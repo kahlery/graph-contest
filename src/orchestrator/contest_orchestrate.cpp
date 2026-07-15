@@ -198,6 +198,13 @@ private:
             GraphState g;
             g.tok = entry.name; g.path = entry.path; g.n = entry.n; g.m = entry.m;
             g.method0 = coldMethod(entry.n, entry.m, noGraphviz_, denseDens_);
+            // Large graphs open with the structural family directly: in four
+            // consecutive full-9 hours (seeds 10/12/13/14) the sa-stress
+            // explore lease LOST to the tripod family lease on every big
+            // graph (05: 250 vs 217, 06: 238 vs 215, 08: 82 vs 68 in seed
+            // 14). Starting in the winning basin hands the warm chain the
+            // explore lease's ~100s and a 240s head start.
+            if (entry.n + entry.m >= 1000) g.method0 = "tripod";
             g.done = (entry.m == 0);
             if (entry.m == 0) { g.bestK = 0; g.warm = entry.path; }
             G[entry.name] = g;
@@ -233,8 +240,18 @@ private:
     // --- one lease ----------------------------------------------------- //
     // forceColdMethod: run this lease cold with the given method regardless
     // of warm state (dual-family explore); absorb() keeps it only if better.
+    // The tripod param sweep made narrow arms (--wedge 0.02,0.06) an
+    // instance_05-specific win (cold -12); neutral on 06, slightly negative
+    // on 08 — so only 05 gets the tripod-n variant.
+    static std::string tripodFam(const std::string& nm) {
+        return nm.find("instance_05") != std::string::npos ? "tripod-n"
+                                                           : "tripod";
+    }
+
     bool lease(const std::string& nm, GraphState& g,
-               const std::string& forceColdMethod = "") {
+               const std::string& forceColdMethodIn = "") {
+        std::string forceColdMethod = forceColdMethodIn == "tripod"
+                                          ? tripodFam(nm) : forceColdMethodIn;
         double rem = remaining();
         if (rem < LEASE_FLOOR) return false;
         double qb = quantumBase(budget_, nLive(), qOverride_);
@@ -246,6 +263,11 @@ private:
         // Only from the third lease on: the explore + second-lease-guarantee
         // passes must stay cheap or they'd eat the whole greedy budget.
         double q = std::min(qb, rem);
+        // (2026-07-15) QMAX_GRIND=480 deep legs were tried for one hour
+        // (seed 16) and REVERTED: instance_06 landed at 206 — the worst of
+        // the five-seed 198-207 band — so cooling depth is not what blocks
+        // it, and the longer warm lease doubled instance_03's dead urgency
+        // spend (789s at dk=0). Short legs also harvest more 8-worker draws.
         if (g.n + g.m >= 1000 && g.leases >= 2)
             q = std::min(std::min(2.0 * qb, QMAX), rem);
         // A forced-family lease (staged = LNS then SA) needs room for the LNS
@@ -280,14 +302,15 @@ private:
                                       ? std::string(FAMILIES[g.altCold % 3])
                                       : g.method0)
                                : "sa-warm";
+        if (method == "tripod") method = tripodFam(nm);
         std::string warm = (cold || coldRestart) ? "" : g.warm;
         // Cross-family pollination: every other stall-driven restart, if a
         // DIFFERENT family holds a layout within 10% of the incumbent k,
         // warm-continue from it instead of going fully cold — the stalled
         // chain inherits the competing basin's head start.
-        std::string famUsed = cold ? (forceColdMethod.empty() ? g.method0
-                                                              : forceColdMethod)
-                            : coldRestart ? method
+        // method already carries the tripod->tripod-n remap, so cold and
+        // cold-restart leases book their family under the variant that ran.
+        std::string famUsed = (cold || coldRestart) ? method
                             : (g.chainFam.empty() ? g.method0 : g.chainFam);
         if (coldRestart) {
             if (g.pollinateNext) {
@@ -449,16 +472,17 @@ private:
             lease(nm, *gp);
         }
         // Dual-family explore: the best layout family is graph-specific and
-        // cannot be predicted. Large graphs get a second cold lease from the
-        // TRIPOD family — it beat or matched staged as a cold start on every
-        // tested graph (05: 210 vs 235, 06: 210 vs 228, 08: 68 vs 68) and
-        // its init stage is instant, so nearly the whole lease is SA. staged
-        // stays in the cold-restart rotation. absorb() keeps whichever
-        // family won; every later warm lease builds on that winner.
+        // cannot be predicted. Large graphs now OPEN on tripod (method0),
+        // so the second cold lease comes from STAGED — the LNS family that
+        // holds the 08 record, with the bandit-armed SA tail validated in
+        // paired A/Bs (same LNS layout + same tail seed: 67v69, 66v68).
+        // sa-stress is out of the big-graph picture entirely: it lost the
+        // family race in four consecutive full-9 hours (seeds 10/12/13/14).
+        // absorb() keeps whichever family won; warm leases build on that.
         for (auto& [nm, gp] : todo) {
             if (gp->done || gp->n + gp->m < 1000) continue;
             if (remaining() < LEASE_FLOOR) break;
-            lease(nm, *gp, "tripod");
+            lease(nm, *gp, "staged");
         }
     }
 
@@ -507,8 +531,15 @@ private:
                     // raw explore values. Cap: at most 2 urgency leases each
                     // (leases<4 incl. explore) and none in the last quarter
                     // of the budget, which stays reserved for the big grind.
+                    // Progress gate: the LAST urgency lease (leases==3) must
+                    // be earned by a k drop in the previous one. Seeds 12+13
+                    // both spent 3x240s on instance_03 at dk=0 throughout
+                    // (the k=9 basin is cold-seed luck, unreachable by warm
+                    // polish), while instance_04 improved every lease on its
+                    // way to 31 — pay for progress, stop refilling dead ends.
                     if (g.target.has_value() && g.bestK.has_value() &&
-                        g.leases < 4 && remaining() > 0.25 * budget_) {
+                        g.leases < 4 && remaining() > 0.25 * budget_ &&
+                        (g.leases < 3 || g.lastDk > 0)) {
                         int gap = *g.bestK - *g.target;
                         if (gap > 0 && gap <= 3) b = 1e6 / (1.0 + g.leases);
                     }
