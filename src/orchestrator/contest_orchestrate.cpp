@@ -29,11 +29,14 @@
 //   contest_orchestrate --self-test        # pure-logic checks, no solver
 
 #include "../common/engine.hpp"
+#include "control_panel.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -128,6 +131,8 @@ struct GraphState {
     std::string warm;
     int leases = 0, stalls = 0;
     int warmLeases = 0;   // plain warm continuations run so far
+    bool bannedByPanel = false;
+    std::vector<std::array<double,3>> hist;   // (wall, bestK, bestX) per lease
     double lastDk = 0.0, lastDxf = 0.0;
     double spent = 0.0;
     bool done = false;
@@ -139,10 +144,11 @@ public:
                         const std::string& outDir, long long seed, int xchgRounds, bool halfShare,
                         double denseDens, std::optional<double> quantumOverride,
                         const std::string& only = "",
-                        const std::map<std::string,int>& targets = {})
+                        const std::map<std::string,int>& targets = {},
+                        int uiPort = 0)
         : budget_(budget), W_(workers), seed_(seed), xchg_(xchgRounds), half_(halfShare),
           denseDens_(denseDens), qOverride_(quantumOverride), outRoot_(outDir),
-          label_(pathBasename(graphsDir)) {
+          label_(pathBasename(graphsDir)), uiPort_(uiPort) {
         runId_ = "corch_" + std::to_string((long long)time(nullptr));
         runDir_ = outRoot_ + "/runs/" + runId_;
         mkdirs(runDir_);
@@ -157,6 +163,14 @@ public:
 
     mjson::Value run() {
         t0_ = Clock::now();
+        if (uiPort_ > 0) {
+            panel_.configure(runId_, budget_, [this]() { return now(); });
+            if (panel_.start(uiPort_))
+                log("control panel: http://127.0.0.1:" + std::to_string(uiPort_) + "/");
+            else
+                log("control panel: port " + std::to_string(uiPort_) + " unavailable, UI off");
+            panel_.updateGraphs(graphsJson());
+        }
         double deadlineIn = budget_ - std::min(verifyReserve(), 0.20 * budget_);
         hardDeadline_ = t0_ + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(deadlineIn));
         try {
@@ -165,7 +179,9 @@ public:
         } catch (std::exception& e) {
             fprintf(stderr, "[corch] scheduler aborted: %s\n", e.what());
         }
-        return finalize();
+        auto rep = finalize();
+        panel_.stop();
+        return rep;
     }
 
 private:
@@ -184,6 +200,66 @@ private:
     double leaseTimeout_ = 0.0;
     double maxOverrun_ = 0.0;
     bool verbose_ = true;
+    int uiPort_ = 0;
+    panel::Server panel_;
+
+    std::string graphsJson() {
+        std::ostringstream os;
+        os << "{";
+        bool first = true;
+        for (auto& [nm, g] : G_) {
+            if (!first) os << ",";
+            first = false;
+            os << "\"" << nm << "\":{\"k\":"
+               << (g.bestK.has_value() ? std::to_string(*g.bestK) : "null")
+               << ",\"x\":" << (g.bestX.has_value() ? std::to_string(*g.bestX) : "null")
+               << ",\"sec\":" << (int)g.spent << ",\"leases\":" << g.leases
+               << ",\"done\":" << (g.done ? "true" : "false")
+               << ",\"method0\":\"" << g.method0 << "\",\"hist\":[";
+            for (size_t i = 0; i < g.hist.size(); i++) {
+                if (i) os << ",";
+                os << "[" << (int)g.hist[i][0] << "," << (long long)g.hist[i][1]
+                   << "," << (long long)g.hist[i][2] << "]";
+            }
+            os << "]}";
+        }
+        os << "}";
+        return os.str();
+    }
+
+    // Apply panel commands (main thread only). Returns the active focus
+    // graph name, or "" when none.
+    std::string applyControl() {
+        if (uiPort_ <= 0) return "";
+        panel::Control c = panel_.control();
+        for (auto& [nm, g] : G_) {
+            bool wantBan = c.banned.count(nm) > 0;
+            if (wantBan && !g.done) {
+                g.done = true; g.bannedByPanel = true;
+                log(nm + ": BANNED via panel -> bank budget");
+            } else if (!wantBan && g.bannedByPanel) {
+                g.done = false; g.bannedByPanel = false;
+                log(nm + ": UNBANNED via panel");
+            }
+        }
+        std::string focus = c.focus;
+        if (!focus.empty()) {
+            auto it = G_.find(focus);
+            bool expire = false;
+            if (it == G_.end() || it->second.done) expire = true;
+            else if (c.untilK >= 0 && it->second.bestK.has_value() &&
+                     *it->second.bestK <= c.untilK) {
+                log(focus + ": focus target k<=" + std::to_string(c.untilK) +
+                    " reached -> focus cleared");
+                expire = true;
+            } else if (c.focusDeadline >= 0 && now() >= c.focusDeadline) {
+                log(focus + ": focus time up -> focus cleared");
+                expire = true;
+            }
+            if (expire) { panel_.clearFocus(); focus.clear(); }
+        }
+        return focus;
+    }
 
     void log(const std::string& msg) {
         if (verbose_) fprintf(stderr, "[corch %6.1fs] %s\n", now(), msg.c_str());
@@ -378,6 +454,7 @@ private:
                  (xchg > 1 && half_) ? "h" : "",
                  g.bestK.has_value() ? std::to_string(*g.bestK).c_str() : "None", g.leases);
         log(buf);
+        panel_.setCurrent(nm, method, qdir, q, now());
 
         std::optional<WorkerResult> bestW;
         double wall = 0.0;
@@ -407,6 +484,14 @@ private:
 
         std::string kStr = g.bestK.has_value() ? std::to_string(*g.bestK) : "None";
         log(std::string(buf) + " k=" + kStr);
+        // Panel bookkeeping: the abort flag must not outlive the lease it
+        // targeted, and the descent history feeds the live charts.
+        proc::abortAll().store(false);
+        panel_.clearCurrent();
+        if (g.bestK.has_value())
+            g.hist.push_back({now(), (double)*g.bestK,
+                              (double)g.bestX.value_or(0)});
+        panel_.updateGraphs(graphsJson());
         return true;
     }
 
@@ -486,6 +571,8 @@ private:
         log(buf);
         for (auto& [nm, gp] : todo) {
             if (remaining() < LEASE_FLOOR) break;
+            applyControl();
+            if (gp->done) continue;
             lease(nm, *gp);
         }
         // Dual-family explore: the best layout family is graph-specific and
@@ -497,6 +584,7 @@ private:
         // family race in four consecutive full-9 hours (seeds 10/12/13/14).
         // absorb() keeps whichever family won; warm leases build on that.
         for (auto& [nm, gp] : todo) {
+            applyControl();
             if (gp->done || gp->n + gp->m < 1000) continue;
             if (remaining() < LEASE_FLOOR) break;
             lease(nm, *gp, "staged");
@@ -519,6 +607,8 @@ private:
             if (!starved.empty()) log("=== SECOND-LEASE guarantee ===");
             for (auto& [nm, gp] : starved) {
                 if (remaining() < LEASE_FLOOR) break;
+                applyControl();
+                if (gp->done) continue;
                 lease(nm, *gp);
             }
         }
@@ -540,11 +630,16 @@ private:
             if (!chainless.empty()) log("=== WARM-CHAIN guarantee ===");
             for (auto& [nm, gp] : chainless) {
                 if (remaining() < LEASE_FLOOR) break;
+                applyControl();
+                if (gp->done) continue;
                 lease(nm, *gp);
             }
         }
         log("=== GREEDY marginal-gain reallocation ===");
         while (remaining() >= LEASE_FLOOR) {
+            // Panel commands land here: bans mark graphs done, focus
+            // overrides the auction below until its k / time condition.
+            std::string focus = applyControl();
             for (auto& [nm, g] : G_) {
                 // Large graphs need headroom for cold-restart attempts (each
                 // failed restart is a stall), so they converge at 4 stalls.
@@ -586,7 +681,11 @@ private:
             }
             if (live.empty()) { log("all graphs converged -> stop early, budget banked"); break; }
             std::sort(live.begin(), live.end(), [](auto& a, auto& b) { return std::get<0>(a) > std::get<0>(b); });
-            auto& [score, nm, gp] = live[0];
+            size_t pick = 0;
+            if (!focus.empty())
+                for (size_t i = 0; i < live.size(); i++)
+                    if (std::get<1>(live[i]) == focus) { pick = i; break; }
+            auto& [score, nm, gp] = live[pick];
             (void)score;
             if (!lease(nm, *gp)) break;
         }
@@ -630,6 +729,32 @@ private:
         report["max_overrun_sec"] = std::round(maxOverrun_ * 10.0) / 10.0;
         report["summary"] = summary;
         saveJson(runDir_ + "/orchestration.json", report);
+        // Per-run best-of-run summary lives WITH the layouts so no one has
+        // to dig through run dirs: submission/<runId>/SUMMARY.txt.
+        {
+            std::vector<std::string> names;
+            for (auto& kv : summary.asObject()) names.push_back(kv.first);
+            std::sort(names.begin(), names.end());
+            FILE* f = fopen((subDir + "/SUMMARY.txt").c_str(), "w");
+            if (f) {
+                fprintf(f, "RUN %s  budget=%.0fs  wall=%.0fs\n\n", runId_.c_str(),
+                        budget_, now());
+                fprintf(f, "%-16s%6s%11s%7s%7s  method\n", "graph", "k", "totalX",
+                        "sec", "leases");
+                long long sumK = 0; int worst = -1; bool any = false;
+                for (auto& nm : names) {
+                    const auto& s = summary[nm];
+                    std::string kS = s["k"].isNull() ? "None" : std::to_string(s["k"].asLL());
+                    std::string xS = s["totalX"].isNull() ? "None" : std::to_string(s["totalX"].asLL());
+                    if (!s["k"].isNull()) { sumK += s["k"].asLL(); worst = std::max(worst, s["k"].asInt()); any = true; }
+                    fprintf(f, "%-16s%6s%11s%7.0f%7lld  %s\n", nm.c_str(), kS.c_str(),
+                            xS.c_str(), s["seconds"].asDouble(), s["leases"].asLL(),
+                            s["method0"].asString().c_str());
+                }
+                if (any) fprintf(f, "\nworst-k=%d  sum-k=%lld\n", worst, sumK);
+                fclose(f);
+            }
+        }
         printReport(report);
         return report;
     }
@@ -722,6 +847,7 @@ struct Args {
     double denseDensity = DENSE_DENS;
     std::optional<double> quantum;
     bool selfTest = false;
+    int uiPort = 8917;   // live control panel; 0 disables
 };
 
 Args parseArgs(int argc, char** argv) {
@@ -744,6 +870,7 @@ Args parseArgs(int argc, char** argv) {
         else if (s == "--no-half") a.noHalf = true;
         else if (s == "--dense-density") a.denseDensity = std::stod(next());
         else if (s == "--quantum") a.quantum = std::stod(next());
+        else if (s == "--ui-port") a.uiPort = std::stoi(next());
         else if (s == "--self-test") a.selfTest = true;
         else throw std::runtime_error("unknown argument: " + s);
     }
@@ -791,7 +918,7 @@ int main(int argc, char** argv) {
 
     ContestOrchestrator orch(graphsDir, args.budget, args.workers, outDir, args.seed,
                              args.xchgRounds, !args.noHalf, args.denseDensity, args.quantum,
-                             args.only, targets);
+                             args.only, targets, args.uiPort);
     orch.run();
     return 0;
 }

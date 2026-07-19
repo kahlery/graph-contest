@@ -26,6 +26,7 @@
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -47,6 +48,12 @@ using namespace std::chrono;
 
 using ll  = long long;
 using i64 = int64_t;
+
+// Graceful stop: on SIGTERM/SIGINT the annealing loops exit as if the time
+// budget were spent, so the best-so-far layout is still written to -o. Lets
+// the orchestrator's live control panel abort a lease without losing it.
+static volatile sig_atomic_t gStopRequested = 0;
+static void gOnStopSignal(int) { gStopRequested = 1; }
 
 // ====================================================================
 // Geometry
@@ -2367,10 +2374,12 @@ public:
         // that lost the earlier A/B. Best is preserved across reheats, so the
         // result is always >= the cooling-only behaviour.
         double reheatCeil = initT;
-        while (kVal > 0 && elapsed() < timeLimitSec) {
-        while (kVal > 0 && startingTemp > tLim && elapsed() < timeLimitSec) {
+        while (kVal > 0 && !gStopRequested && elapsed() < timeLimitSec) {
+        while (kVal > 0 && !gStopRequested && startingTemp > tLim &&
+               elapsed() < timeLimitSec) {
             double currentTemp = startingTemp;
-            while (kVal > 0 && currentTemp > tLim && elapsed() < timeLimitSec) {
+            while (kVal > 0 && !gStopRequested && currentTemp > tLim &&
+                   elapsed() < timeLimitSec) {
                 int v = selectNode();
 
                 if (gridAnneal) {
@@ -2610,6 +2619,8 @@ static void printUsage(const char* prog) {
 }
 
 int main(int argc, char** argv) {
+    signal(SIGTERM, gOnStopSignal);
+    signal(SIGINT, gOnStopSignal);
     string inputFile, outputFile;
     double totalMin  = 60.0;
     double phase1Min = 10.0;

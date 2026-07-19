@@ -3,6 +3,7 @@
 // stdout capture. fork/exec based (Linux + macOS).
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -134,6 +135,16 @@ struct LoggedResult {
     bool   timedOut = false;
 };
 
+// Cooperative abort for every runLogged child: when set, running children
+// get SIGTERM (sakgd handles it by finishing gracefully and writing its
+// best-so-far layout) and SIGKILL if still alive after a grace window.
+// The orchestrator's live control panel sets this to abort a lease and
+// clears it once the lease has been absorbed.
+inline std::atomic<bool>& abortAll() {
+    static std::atomic<bool> f{false};
+    return f;
+}
+
 // Runs a (potentially long) child with combined stdout+stderr redirected to
 // logPath, killing it if it runs past timeoutSec (infinity = no deadline).
 // Mirrors the Python orchestrator's `subprocess.run(cmd, stdout=log,
@@ -145,10 +156,22 @@ inline LoggedResult runLogged(const std::vector<std::string>& args,
     auto t0 = Clock::now();
     LoggedResult res;
     Child c = Child::spawn(args, cwd, logPath, logPath);
+    double termSentAt = -1.0;
     while (true) {
         int code;
         if (c.poll(code)) { res.exitCode = code; break; }
         double elapsed = std::chrono::duration<double>(Clock::now() - t0).count();
+        if (abortAll().load(std::memory_order_relaxed)) {
+            if (termSentAt < 0) {
+                ::kill(c.pid(), SIGTERM);
+                termSentAt = elapsed;
+            } else if (elapsed - termSentAt > 8.0) {
+                c.killIfRunning(SIGKILL);
+                res.timedOut = true;
+                res.exitCode = -9;
+                break;
+            }
+        }
         if (timeoutSec >= 0.0 && elapsed >= timeoutSec) {
             c.killIfRunning(SIGKILL);
             res.timedOut = true;
@@ -165,6 +188,16 @@ inline LoggedResult runLogged(const std::vector<std::string>& args,
         nanosleep(&ts, nullptr);
     }
     res.wallSec = std::chrono::duration<double>(Clock::now() - t0).count();
+    // Note written after the child exits: a freshly-spawned child truncates
+    // its own log on exec, so an append at kill time can be wiped.
+    if (termSentAt >= 0) {
+        FILE* f = fopen(logPath.c_str(), "a");
+        if (f) {
+            fprintf(f, "\n[orch] lease aborted by control panel (SIGTERM at %.0fs, %s)\n",
+                    termSentAt, res.timedOut ? "SIGKILL follow-up" : "graceful exit");
+            fclose(f);
+        }
+    }
     return res;
 }
 
