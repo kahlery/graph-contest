@@ -758,6 +758,8 @@ public:
                                     // translation (see attemptPairMove)
     bool           slot0Drift = false; // slot-0: drift walk instead of the
                                     // blind Gaussian (see proposeCandidate)
+    bool           vmGrid = false;     // level-clear adds a coarse canvas grid
+                                       // + fine refinement (VM-style argmin)
     bool           levelClear = false; // run the level-clearing sweep at each
                                     // phase-2 budget-reheat (stagnation) point
     bool           gridAnneal = false; // coarse-to-fine proposal quantisation:
@@ -2194,15 +2196,32 @@ public:
                     cands.push_back(jitterClamp(curPos.x + d * cos(an),
                                                 curPos.y + d * sin(an), 1.0));
                 }
+                // (d) VM-grid: coarse whole-canvas scan (vertex-movement
+                // style — the winner's per-vertex argmin searches the whole
+                // drawing, not just local proposals). The winning coarse
+                // cell is refined below with a finer 5x5 stencil.
+                const int GG = 12;
+                double cw = (double)W / GG, ch = (double)H / GG;
+                if (vmGrid)
+                    for (int gx = 0; gx < GG; gx++)
+                        for (int gy = 0; gy < GG; gy++)
+                            cands.push_back(jitterClamp(
+                                ox + (gx + 0.5) * cw,
+                                oy + (gy + 0.5) * ch, cw * 0.04));
 
                 // exact evaluation; keep a small ranked list so the deferred
                 // validity check is paid only for actual winners
                 ranked.clear();
                 int oldLK = -1;
-                for (const Pt& p : cands) {
-                    if (p == curPos) continue;
+                auto worse = [](const Cand& a, const Cand& b) {
+                    if (a.lk   != b.lk)   return a.lk   > b.lk;
+                    if (a.dtop != b.dtop) return a.dtop > b.dtop;
+                    return a.dx > b.dx;
+                };
+                auto evalCand = [&](const Pt& p) {
+                    if (p == curPos) return;
                     auto it = occupied.find(p);
-                    if (it != occupied.end() && it->second != v) continue;
+                    if (it != occupied.end() && it->second != v) return;
                     planMove(v, p, plan);
                     oldLK = plan.oldLocalK;
                     int dtop = 0;
@@ -2211,16 +2230,22 @@ public:
                         dtop += (int)(newC >= kVal) - (int)(oldC >= kVal);
                     }
                     Cand c{plan.newLocalK, dtop, plan.dCross, p};
-                    auto worse = [](const Cand& a, const Cand& b) {
-                        if (a.lk   != b.lk)   return a.lk   > b.lk;
-                        if (a.dtop != b.dtop) return a.dtop > b.dtop;
-                        return a.dx > b.dx;
-                    };
                     ranked.push_back(c);
                     for (size_t i = ranked.size() - 1;
                          i > 0 && worse(ranked[i - 1], ranked[i]); i--)
                         std::swap(ranked[i - 1], ranked[i]);
                     if (ranked.size() > 3) ranked.pop_back();
+                };
+                for (const Pt& p : cands) evalCand(p);
+                if (vmGrid && !ranked.empty()) {
+                    // fine 5x5 refinement around the current best candidate
+                    Pt b = ranked[0].p;
+                    for (int dx = -2; dx <= 2; dx++)
+                        for (int dy = -2; dy <= 2; dy++) {
+                            if (!dx && !dy) continue;
+                            evalCand(jitterClamp(b.x + dx * cw / 5.0,
+                                                 b.y + dy * ch / 5.0, 1.0));
+                        }
                 }
                 if (oldLK < 0) continue;
                 for (const Cand& c : ranked) {
@@ -2601,6 +2626,8 @@ static void printUsage(const char* prog) {
         "  --lexk 0|1 phase-2 lexicographic fitness (k, #edges at k, totalX)\n"
         "             (default: 0 — hurts dense graphs)\n"
         "  --krepair 0|1 deterministic vertex-move polish of bottleneck edges\n"
+        "  --vm-grid 0|1 level-clear sweep adds a coarse canvas grid + fine\n"
+        "             refinement per vertex (VM-style whole-drawing argmin)\n"
         "             between phase-2 waves (default: 0)\n"
         "  --cands N     phase-2 best-of-N benefit analysis: plan N candidate\n"
         "                positions per move, accept-test only the best (default: 1)\n"
@@ -2648,6 +2675,7 @@ int main(int argc, char** argv) {
     string moveLogArg;        // path: phase-2 move benefit/harm instrumentation
     int    gridAnnealArg = 0; // 1 = coarse-to-fine proposal quantisation
     int    levelClearArg = 0; // 1 = level-clearing sweep at phase-2 stagnation
+    int    vmGridArg = 0;     // 1 = VM-style grid candidates in the sweep
     string slot0Arg = "gauss"; // slot-0 proposal: gauss | drift
     int    pairMoveArg = 0;   // 1 = coordinated two-endpoint move on edgeMoveP budget
     int    banditArg   = 0;   // 1 = credit-weighted cands-mix slot sampling
@@ -2684,6 +2712,7 @@ int main(int argc, char** argv) {
         else if (a == "--move-log")          moveLogArg   = need("--move-log");
         else if (a == "--grid-anneal")       gridAnnealArg = atoi(need("--grid-anneal"));
         else if (a == "--level-clear")       levelClearArg = atoi(need("--level-clear"));
+        else if (a == "--vm-grid")           vmGridArg  = atoi(need("--vm-grid"));
         else if (a == "--slot0")             slot0Arg      = need("--slot0");
         else if (a == "--pair-move")         pairMoveArg   = atoi(need("--pair-move"));
         else if (a == "--bandit")            banditArg     = atoi(need("--bandit"));
@@ -2728,6 +2757,7 @@ int main(int argc, char** argv) {
     solver.moveLogFile    = moveLogArg;
     solver.gridAnneal     = (gridAnnealArg != 0);
     solver.levelClear     = (levelClearArg != 0);
+    solver.vmGrid         = (vmGridArg != 0);
     solver.slot0Drift     = (slot0Arg == "drift");
     solver.pairMove       = (pairMoveArg != 0);
     solver.bandit         = (banditArg != 0);

@@ -131,6 +131,7 @@ struct GraphState {
     std::string warm;
     int leases = 0, stalls = 0;
     int warmLeases = 0;   // plain warm continuations run so far
+    bool hubSkew = false; // degree skew >= 4 (scale-free / hub-dominated)
     bool bannedByPanel = false;
     std::vector<std::array<double,3>> hist;   // (wall, bestK, bestX) per lease
     double lastDk = 0.0, lastDxf = 0.0;
@@ -293,6 +294,10 @@ private:
             // on dense graphs.
             if (entry.n + entry.m >= 2000 && entry.m <= 4 * entry.n)
                 g.method0 = "gradx";
+            // Degree-skew feature for the tripod-n routing (and any future
+            // hub-aware policy); computed once per graph at scan time.
+            if (entry.n + entry.m >= 1000)
+                g.hubSkew = degreeSkew(entry.path) >= 4.0;
             g.done = (entry.m == 0);
             if (entry.m == 0) { g.bestK = 0; g.warm = entry.path; }
             G[entry.name] = g;
@@ -328,18 +333,19 @@ private:
     // --- one lease ----------------------------------------------------- //
     // forceColdMethod: run this lease cold with the given method regardless
     // of warm state (dual-family explore); absorb() keeps it only if better.
-    // The tripod param sweep made narrow arms (--wedge 0.02,0.06) an
-    // instance_05-specific win (cold -12); neutral on 06, slightly negative
-    // on 08 — so only 05 gets the tripod-n variant.
-    static std::string tripodFam(const std::string& nm) {
-        return nm.find("instance_05") != std::string::npos ? "tripod-n"
-                                                           : "tripod";
+    // The tripod param sweep made narrow arms (--wedge 0.02,0.06) a win
+    // specifically on the hub-dominated graph (cold -12 on instance_05,
+    // neutral on ER, slightly negative on SBM) — so the variant is routed
+    // by the degree-skew FEATURE, not the instance name, and generalizes
+    // to unseen graphs (skew >= 4; official set: 05 = 11.8, rest <= 2.33).
+    static std::string tripodFam(const GraphState& g) {
+        return g.hubSkew ? "tripod-n" : "tripod";
     }
 
     bool lease(const std::string& nm, GraphState& g,
                const std::string& forceColdMethodIn = "") {
         std::string forceColdMethod = forceColdMethodIn == "tripod"
-                                          ? tripodFam(nm) : forceColdMethodIn;
+                                          ? tripodFam(g) : forceColdMethodIn;
         double rem = remaining();
         if (rem < LEASE_FLOOR) return false;
         double qb = quantumBase(budget_, nLive(), qOverride_);
@@ -394,7 +400,7 @@ private:
                                       ? std::string(FAMILIES[g.altCold % 3])
                                       : g.method0)
                                : "sa-warm";
-        if (method == "tripod") method = tripodFam(nm);
+        if (method == "tripod") method = tripodFam(g);
         std::string warm = (cold || coldRestart) ? "" : g.warm;
         // Cross-family pollination: every other stall-driven restart, if a
         // DIFFERENT family holds a layout within 10% of the incumbent k,

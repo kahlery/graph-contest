@@ -110,6 +110,49 @@ inline std::pair<int,int> graphSize(const std::string& path) {
     return {n, m};
 }
 
+// Degree-skew feature: maxDeg / avgDeg. Scale-free (hub-dominated) graphs
+// separate cleanly from everything else on the official set — instance_05
+// (BA) scores 11.8 while every other graph is <= 2.33 — so a threshold of
+// 4 has a wide safety margin. Used to route hub-skewed graphs to the
+// narrow-arm tripod variant (see the orchestrator's tripodFam()).
+inline double degreeSkew(const std::string& path) {
+    auto v = mjson::parseFile(path);
+    if (!v.has("nodes") || !v.has("edges")) return 1.0;
+    auto& nodes = v["nodes"].asArray();
+    int n = (int)nodes.size();
+    if (n == 0) return 1.0;
+    std::map<std::string,int> idOf;
+    for (int i = 0; i < n; i++) {
+        auto& nd = nodes[i];
+        std::string key = std::to_string(i);
+        if (nd.has("id")) {
+            auto& iv = nd.at("id");
+            key = iv.isStr() ? iv.asString() : std::to_string(iv.asLL());
+        }
+        idOf[key] = i;
+    }
+    std::vector<int> deg(n, 0);
+    long long m2 = 0;
+    for (auto& ev : v["edges"].asArray()) {
+        auto idKey = [](const mjson::Value& iv) {
+            return iv.isStr() ? iv.asString() : std::to_string(iv.asLL());
+        };
+        std::string s, t;
+        if      (ev.has("source")) s = idKey(ev.at("source"));
+        else if (ev.has("from"))   s = idKey(ev.at("from"));
+        if      (ev.has("target")) t = idKey(ev.at("target"));
+        else if (ev.has("to"))     t = idKey(ev.at("to"));
+        auto its = idOf.find(s), itt = idOf.find(t);
+        if (its == idOf.end() || itt == idOf.end() ||
+            its->second == itt->second) continue;
+        deg[its->second]++; deg[itt->second]++; m2 += 2;
+    }
+    if (m2 == 0) return 1.0;
+    double avg = (double)m2 / n;
+    int mx = *std::max_element(deg.begin(), deg.end());
+    return mx / avg;
+}
+
 // Budget group by graph complexity (n+m), not by a hardcoded graph name/index
 // — generalizes to any input set. Thresholds calibrated so the 9 official
 // contest graphs land in the same small/medium/large buckets as the
@@ -303,6 +346,12 @@ struct MethodSpec {
     std::string id, label;
     int kband = 2;
     std::vector<Stage> stages;
+    // Run stage 0 ONCE per combo at full machine width and warm every
+    // worker from its output (instead of each worker computing its own
+    // starved copy). The exp06 isolation showed init QUALITY, not chain
+    // chopping, gates the SA depth: strong-init arms hit 189/207 while
+    // in-hour-style starved inits stalled at 214/215.
+    bool sharedInit = false;
 };
 
 inline const std::vector<MethodSpec>& METHODS() {
@@ -376,13 +425,14 @@ inline const std::vector<MethodSpec>& METHODS() {
         // coordinates, and the trailing "-p1 0" overrides the p1Frac the
         // runner injects (sakgd arg parsing is last-wins).
         {"gradx", "SA (gradx init)", 2, {
-            // --threads 2: eight cooperative workers each spawn their own
-            // gradx_init; 8x2 saturates the machine without thrashing.
-            {"gradx", "", "init", "init", false, "", {"--threads", "2"}},
+            // sharedInit: ONE full-width gradx_init per combo (the init's
+            // totalX decides how deep the SA lands; eight starved 2-thread
+            // copies cost 06 ~25 k-points in the exp06 isolation).
+            {"gradx", "", "init", "init", false, "", {}},
             {"sakgd", "", "sa", "rest", true, "input",
              {"--cands", "4", "--edge-move", "5", "--cands-mix", "1",
               "--bandit", "1", "-p1", "0"}},
-        }},
+        }, /*sharedInit=*/true},
         {"staged", "Staged", 2, {
             {"approach1", "lns", "lns", "lns", false, "", {}},
             {"sakgd", "", "sa", "rest", true, "",
@@ -570,7 +620,35 @@ inline ComboResult runCombo(const std::string& method, const std::string& gpath,
                              int xchgRounds = 1, bool halfShare = false, const RunFn& runFn = defaultRun) {
     const MethodSpec* specP = methodById(method);
     if (!specP) throw std::runtime_error("unknown method: " + method);
-    const MethodSpec& spec = *specP;
+    const MethodSpec& registrySpec = *specP;
+    // Shared-init methods run stage 0 once here at full machine width; the
+    // workers then all warm from its output and split only the remaining
+    // budget. (Cold combos only — warm continuations never carry an init.)
+    MethodSpec sharedSpec;
+    const MethodSpec* specUse = &registrySpec;
+    std::string gpathWarmEff = gpathWarm;
+    double totalMinEff = totalMin;
+    if (registrySpec.sharedInit && gpathWarm.empty() &&
+        registrySpec.stages.size() >= 2) {
+        double initMin = totalMin * resolveFracs(registrySpec, lnsFrac)[0];
+        const Stage& st0 = registrySpec.stages[0];
+        std::string sout = outDir + "/" + method + "_init_shared.json";
+        std::string slog = outDir + "/" + method + "_init_shared.log";
+        std::vector<std::string> cmd = {GRADX_INIT(), "-i", gpath, "-o", sout,
+                                        "-s", std::to_string(baseSeed),
+                                        "-t", fmtFixed1(initMin * 60.0)};
+        for (auto& e : st0.extra) cmd.push_back(e);
+        runFn(cmd, slog);
+        if (fileExists(sout)) {
+            sharedSpec = registrySpec;
+            sharedSpec.stages.erase(sharedSpec.stages.begin());
+            specUse = &sharedSpec;
+            gpathWarmEff = sout;
+            totalMinEff = std::max(0.05, totalMin - initMin);
+        }
+    }
+    const MethodSpec& spec = *specUse;
+    totalMin = totalMinEff;
     int kband = spec.kband;
     std::vector<std::string> extra = spec.stages.back().extra;
     std::string elite = outDir + "/" + method + "_elite.json";
@@ -582,7 +660,7 @@ inline ComboResult runCombo(const std::string& method, const std::string& gpath,
     auto workerFn = [&](int wid) {
         long long seed = baseSeed + wid;
         std::string suffix = "_w" + std::to_string(wid);
-        std::string inp = (!gpathWarm.empty() && fileExists(gpathWarm)) ? gpathWarm : gpath;
+        std::string inp = (!gpathWarmEff.empty() && fileExists(gpathWarmEff)) ? gpathWarmEff : gpath;
         auto t0 = Clock::now();
 
         std::string out, glogPath;
