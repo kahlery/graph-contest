@@ -774,6 +774,15 @@ public:
     bool           fitTarget = false; // phase-2 fitness = excess over targetK
     int            targetK   = -1;    // current feasibility target (see fitOf)
     int            targetK0  = 0;     // user-pinned start target, 0 = auto
+    ll             xCap      = 0;     // phase-2: soft ceiling on totalX, 0=off
+    double         xCapRel   = 0.0;   // if >0, xCap = xCapRel * X at phase-2 entry
+    double         xCapW     = 0.02;  // penalty per crossing above the cap
+    int            pNormP1   = 0;     // phase-1 exponent; 0 = plain dCross.
+                                      // p=1 is exactly the crossing count, so
+                                      // a small p>1 keeps phase 1's job (drive
+                                      // X down) while already discouraging the
+                                      // pile-ups that phase 2 would otherwise
+                                      // have to undo at the cost of inflating X.
     int            reheatWaves = 0; // phase-2: waves without a bestK drop
                                     // before resetting temp to initT (0 = off)
     int            placeMode = 0;   // 0 = plain Gaussian proposal,
@@ -2634,7 +2643,29 @@ public:
         // Phase fitness of a planned move (shared by the single-proposal path
         // and the best-of-C benefit analysis below).
         auto fitOf = [&](const MovePlan& pl) -> double {
-            if (phase == 1) return (double)pl.dCross;
+            if (phase == 1) {
+                if (pNormP1 <= 0) return (double)pl.dCross;
+                const double inv = 1.0 / (double)max(1, kVal);
+                double s = 0.0;
+                for (auto& ec : pl.edgeCounts) {
+                    s += ipow((double)std::get<2>(ec) * inv, pNormP1)
+                       - ipow((double)std::get<1>(ec) * inv, pNormP1);
+                }
+                return s * (double)max(1, kVal) / (double)pNormP1;
+            }
+            // Soft ceiling on total crossings. Lowering the bottleneck almost
+            // always costs total crossings - the optimiser buys a flatter tail
+            // by spreading the drawing out - and since the floor ceil(2X/m)
+            // rises with X, that trade eventually works against itself: p24 on
+            // instance_08 settles at k=64 with X=30k, whereas the same k/mean
+            // ratio held at the X=22k phase 1 can reach would give k~47. This
+            // term prices crossings past the cap so balance has to be found
+            // within a crossing budget instead of by inflating one.
+            auto capPenalty = [&](const MovePlan& pl) -> double {
+                if (xCap <= 0) return 0.0;
+                ll xo = totalX, xn = totalX + pl.dCross;
+                return xCapW * (double)(max(0LL, xn - xCap) - max(0LL, xo - xCap));
+            };
             if (fitTarget) {
                 // Feasibility formulation: instead of minimising the maximum
                 // directly, fix a target K and minimise only how far edges
@@ -2666,7 +2697,7 @@ public:
                 // which is what makes one temperature schedule work for both
                 // the wide-open start and the nearly-feasible endgame.
                 d /= (double)max(1, kVal - targetK);
-                return d + 1e-3 * (double)pl.dCross;
+                return d + 1e-3 * (double)pl.dCross + capPenalty(pl);
             }
             if (fitPNorm) {
                 // Soft-max bottleneck fitness: E = sum_e (c_e / k)^p.
@@ -2693,7 +2724,7 @@ public:
                     s += ipow((double)std::get<2>(ec) * inv, pNormCur)
                        - ipow((double)std::get<1>(ec) * inv, pNormCur);
                 }
-                return s * (double)max(1, kVal) / (double)pNormCur;
+                return s * (double)max(1, kVal) / (double)pNormCur + capPenalty(pl);
             }
             if (fitSq) {
                 // Squared-crossings fitness: dE = sum(newC^2 - oldC^2),
@@ -2746,6 +2777,8 @@ public:
                  << " sT=" << startingTemp << "\n";
             writeStatus(currentTemp, moves, accepts, "running");
         };
+        if (phase == 2 && xCapRel > 0.0)
+            xCap = (ll)(xCapRel * (double)totalX);
         if (fitTarget && phase == 2) {
             // Auto target = the balance floor ceil(2X/m), the lowest k any
             // drawing with this many crossings could have. Aiming straight at
@@ -3162,6 +3195,10 @@ int main(int argc, char** argv) {
     int    pnormArg  = 6;     // final exponent for --fit pnorm
     int    pnorm0Arg = 0;     // starting exponent (0 = fixed)
     int    tgtkArg   = 0;     // --fit tgt start target (0 = auto from init k)
+    int    pnorm1Arg = 0;     // phase-1 p-norm exponent (0 = plain dCross)
+    long long xcapArg = 0;    // absolute totalX ceiling for phase 2 (0 = off)
+    double xcapRelArg = 0.0;  // ceiling as a multiple of X at phase-2 entry
+    double xcapWArg   = 0.02; // penalty weight per crossing over the ceiling
     string placeArg  = "gauss"; // proposal: gauss | cong (congestion-aware) | bary (barycenter-pull) | smart (neighbour-informed mixture)
     int    candsArg  = 1;     // phase-2 candidates per move (best-of-C benefit analysis)
     int    cands1Arg = 1;     // phase-1 candidates per move
@@ -3213,6 +3250,10 @@ int main(int argc, char** argv) {
         else if (a == "--pnorm")             pnormArg   = atoi(need("--pnorm"));
         else if (a == "--pnorm0")            pnorm0Arg  = atoi(need("--pnorm0"));
         else if (a == "--tgt-k")             tgtkArg    = atoi(need("--tgt-k"));
+        else if (a == "--pnorm1")            pnorm1Arg  = atoi(need("--pnorm1"));
+        else if (a == "--xcap")              xcapArg    = atoll(need("--xcap"));
+        else if (a == "--xcap-rel")          xcapRelArg = atof(need("--xcap-rel"));
+        else if (a == "--xcap-w")            xcapWArg   = atof(need("--xcap-w"));
         else if (a == "--place")             placeArg   = need("--place");
         else if (a == "--cands")             candsArg   = atoi(need("--cands"));
         else if (a == "--cands1")            cands1Arg  = atoi(need("--cands1"));
@@ -3308,6 +3349,10 @@ int main(int argc, char** argv) {
     solver.fitPNorm       = (fitArg == "pnorm");
     solver.fitTarget      = (fitArg == "tgt");
     solver.targetK0       = max(0, tgtkArg);
+    solver.pNormP1        = max(0, min(40, pnorm1Arg));
+    solver.xCap           = max(0LL, xcapArg);
+    solver.xCapRel        = max(0.0, xcapRelArg);
+    solver.xCapW          = xcapWArg;
     solver.pNormP         = max(1, min(40, pnormArg));
     solver.pNormP0        = pnorm0Arg ? max(1, min(40, pnorm0Arg)) : 0;
     solver.pNormCur       = solver.pNormP;
