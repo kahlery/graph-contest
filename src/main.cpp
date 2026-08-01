@@ -86,6 +86,14 @@ static inline ll crossp(const Pt& a, const Pt& b, const Pt& c) {
 
 static inline int sgn(ll x) { return (x > 0) - (x < 0); }
 
+// b^e for small non-negative integer e. Called once per affected edge inside
+// the SA acceptance test, where std::pow's generic path is measurably slower.
+static inline double ipow(double b, int e) {
+    double r = 1.0;
+    while (e) { if (e & 1) r *= b; b *= b; e >>= 1; }
+    return r;
+}
+
 static inline bool bboxOverlap(const Pt& a1, const Pt& a2,
                                const Pt& b1, const Pt& b2) {
     if (max(a1.x, a2.x) < min(b1.x, b2.x)) return false;
@@ -752,6 +760,20 @@ public:
     bool           fitSq    = false; // phase-2 fitness = sum of xc^2 deltas
                                      // (soft max proxy: pressures ALL high-
                                      // crossing edges, not just the k band)
+    bool           fitPNorm = false; // phase-2 fitness = sum of (xc/k)^p deltas
+    int            pNormP   = 6;     // final exponent p (--pnorm)
+    int            pNormP0  = 0;     // starting exponent; 0 = fixed at pNormP.
+                                     // Ramping p up over the phase is a
+                                     // curriculum between the two objectives it
+                                     // interpolates: sum (c/k)^1 is exactly the
+                                     // total-crossing count, p -> inf is the
+                                     // bottleneck. Early low p buys a cheap,
+                                     // low-X drawing; late high p spends that
+                                     // slack on flattening the tail.
+    int            pNormCur  = 6;    // p in force right now (ramped in runSA)
+    bool           fitTarget = false; // phase-2 fitness = excess over targetK
+    int            targetK   = -1;    // current feasibility target (see fitOf)
+    int            targetK0  = 0;     // user-pinned start target, 0 = auto
     int            reheatWaves = 0; // phase-2: waves without a bestK drop
                                     // before resetting temp to initT (0 = off)
     int            placeMode = 0;   // 0 = plain Gaussian proposal,
@@ -2613,6 +2635,66 @@ public:
         // and the best-of-C benefit analysis below).
         auto fitOf = [&](const MovePlan& pl) -> double {
             if (phase == 1) return (double)pl.dCross;
+            if (fitTarget) {
+                // Feasibility formulation: instead of minimising the maximum
+                // directly, fix a target K and minimise only how far edges
+                // stick out above it, w(c) = e^2 + e for e = max(0, c - K).
+                // Once every edge fits under K the layout is feasible, K drops
+                // by one and the search restarts against the tighter target.
+                //
+                // Why this beats optimising the max itself: every edge at or
+                // below K scores exactly 0, so no search effort is spent
+                // shuffling crossings among edges that are already fine - the
+                // entire gradient points at the violating set. The quadratic
+                // term additionally levels *within* that set (moving a crossing
+                // from a K+5 edge to a K+1 edge is an improvement), which the
+                // plain excess count would score as neutral.
+                //
+                // dCross enters with a tiny weight purely as a tie-break: moves
+                // that touch no violating edge are otherwise all equal, and
+                // without it the walk drifts into needlessly crossing-heavy
+                // layouts that make the next target harder to reach.
+                double d = 0.0;
+                for (auto& ec : pl.edgeCounts) {
+                    int eo = max(0, std::get<1>(ec) - targetK);
+                    int en = max(0, std::get<2>(ec) - targetK);
+                    d += (double)(en * en + en) - (double)(eo * eo + eo);
+                }
+                // w' grows like 2e, so raw deltas scale with how far the
+                // worst edge currently sits above the target. Dividing by that
+                // span keeps a typical move at O(1) whatever the target is,
+                // which is what makes one temperature schedule work for both
+                // the wide-open start and the nearly-feasible endgame.
+                d /= (double)max(1, kVal - targetK);
+                return d + 1e-3 * (double)pl.dCross;
+            }
+            if (fitPNorm) {
+                // Soft-max bottleneck fitness: E = sum_e (c_e / k)^p.
+                //
+                // The dLocalK fitness below is a plateau: the vast majority of
+                // moves leave the local maximum untouched and score exactly 0,
+                // so the walk carries no information about the *tail* of edges
+                // sitting just under k - yet those are precisely the edges that
+                // must be relieved before k itself can fall. Raising each count
+                // to a power p makes the marginal value of unloading an edge
+                // scale as (c_e/k)^(p-1): ~1 at the bottleneck, ~0 for a lightly
+                // loaded edge, and graded in between. That is the gradient the
+                // plateau lacks, and it prices redistribution automatically -
+                // moving a crossing from a level-k edge onto a level-k/2 edge is
+                // a strict improvement even though k is unchanged.
+                //
+                // Scaling by k/p normalises one unit to "one crossing off a
+                // bottleneck edge", keeping the temperature schedule comparable
+                // to the dLocalK unit. Dividing by k first also keeps every
+                // base in [0, ~1], so large p cannot overflow.
+                const double inv = 1.0 / (double)max(1, kVal);
+                double s = 0.0;
+                for (auto& ec : pl.edgeCounts) {
+                    s += ipow((double)std::get<2>(ec) * inv, pNormCur)
+                       - ipow((double)std::get<1>(ec) * inv, pNormCur);
+                }
+                return s * (double)max(1, kVal) / (double)pNormCur;
+            }
             if (fitSq) {
                 // Squared-crossings fitness: dE = sum(newC^2 - oldC^2),
                 // normalised so that +-1 crossing on a bottleneck-level
@@ -2664,6 +2746,19 @@ public:
                  << " sT=" << startingTemp << "\n";
             writeStatus(currentTemp, moves, accepts, "running");
         };
+        if (fitTarget && phase == 2) {
+            // Auto target = the balance floor ceil(2X/m), the lowest k any
+            // drawing with this many crossings could have. Aiming straight at
+            // it puts the whole upper tail in the violating set from the first
+            // move; targeting kVal-1 instead would leave only a handful of
+            // edges carrying any signal at all.
+            targetK = targetK0 > 0
+                        ? targetK0
+                        : (int)((2 * totalX + m - 1) / max(1, m));
+            targetK = max(0, targetK);
+        }
+        // p-ramp: p0 -> pNormP over the phase budget (see pNormP0's note).
+        pNormCur = (fitPNorm && pNormP0 > 0) ? pNormP0 : pNormP;
         double nextReport = 0.5;        // first dump comes quickly
         double reportEvery = 30.0;      // log to stderr every 30s
         double nextStatus  = 0.0;       // immediate first dump
@@ -2870,6 +2965,9 @@ public:
                         (kVal == bestK && totalX < bestX)) {
                         saveBest();
                     }
+                    // Feasible for the current target: bank it and aim lower.
+                    if (fitTarget && kVal <= targetK)
+                        targetK = max(0, kVal - 1);
                 }
                 moves++;
                 if (bandit && (++banditTick & 4095) == 0)
@@ -2885,6 +2983,12 @@ public:
                 if (el >= nextReport) {
                     if (el >= reportEvery) reportTime(currentTemp);
                     nextReport = el + reportEvery;
+                }
+                if (fitPNorm && pNormP0 > 0 && curBudget > 0.0) {
+                    double frac = min(1.0, el / curBudget);
+                    pNormCur = pNormP0 +
+                        (int)llround(frac * (double)(pNormP - pNormP0));
+                    pNormCur = max(1, pNormCur);
                 }
             }
             startingTemp *= decTW;
@@ -3054,6 +3158,10 @@ int main(int argc, char** argv) {
     int    reheatArg = 0;     // phase-2 stagnation reheat, waves (0 = off)
     int    polishArg = 0;     // final deterministic k-repair polish (0 = off)
     string fitArg    = "k";   // phase-2 fitness: k (paper dual) | sq (xc^2)
+                              // | pnorm (soft-max sum (xc/k)^p)
+    int    pnormArg  = 6;     // final exponent for --fit pnorm
+    int    pnorm0Arg = 0;     // starting exponent (0 = fixed)
+    int    tgtkArg   = 0;     // --fit tgt start target (0 = auto from init k)
     string placeArg  = "gauss"; // proposal: gauss | cong (congestion-aware) | bary (barycenter-pull) | smart (neighbour-informed mixture)
     int    candsArg  = 1;     // phase-2 candidates per move (best-of-C benefit analysis)
     int    cands1Arg = 1;     // phase-1 candidates per move
@@ -3102,6 +3210,9 @@ int main(int argc, char** argv) {
         else if (a == "--reheat")            reheatArg  = atoi(need("--reheat"));
         else if (a == "--polish")            polishArg  = atoi(need("--polish"));
         else if (a == "--fit")               fitArg     = need("--fit");
+        else if (a == "--pnorm")             pnormArg   = atoi(need("--pnorm"));
+        else if (a == "--pnorm0")            pnorm0Arg  = atoi(need("--pnorm0"));
+        else if (a == "--tgt-k")             tgtkArg    = atoi(need("--tgt-k"));
         else if (a == "--place")             placeArg   = need("--place");
         else if (a == "--cands")             candsArg   = atoi(need("--cands"));
         else if (a == "--cands1")            cands1Arg  = atoi(need("--cands1"));
@@ -3194,6 +3305,12 @@ int main(int argc, char** argv) {
     solver.opRegionalFrac = max(1e-5, opRegArg);
     solver.aosAlpha       = min(1.0, max(1e-4, aosAlphaArg));
     solver.fitSq          = (fitArg == "sq");
+    solver.fitPNorm       = (fitArg == "pnorm");
+    solver.fitTarget      = (fitArg == "tgt");
+    solver.targetK0       = max(0, tgtkArg);
+    solver.pNormP         = max(1, min(40, pnormArg));
+    solver.pNormP0        = pnorm0Arg ? max(1, min(40, pnorm0Arg)) : 0;
+    solver.pNormCur       = solver.pNormP;
     solver.fitSq2         = (fitArg == "sq2");
     solver.initMode       = initMode;
     solver.runStartedAt   = steady_clock::now();
