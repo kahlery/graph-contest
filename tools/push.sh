@@ -51,14 +51,20 @@ for f in data/input/internal-2026/*.json data/input/intermediate-contest/*.json;
     g=$(basename "$f" .json)
     if [ -n "$ONLY" ]; then case " $ONLY " in *" $g "*) ;; *) continue ;; esac; fi
 
-    src="$f"; extra=()
+    src="$f"; extra=(); p1="$P1"
     if [ "$COLD" != "1" ] && [ -f "$WORK/best/$g.json" ]; then
         src="$WORK/best/$g.json"
         extra=(--init input)   # keep the champion's coordinates, refine them
+        # ...and skip phase 1 entirely. Phase 1 is a hot anneal on *total*
+        # crossings; run against an already-optimised champion it tears the
+        # layout apart, and phase 2 then restarts from the wreckage rather than
+        # from the champion. (The champion itself is never lost - the solver
+        # writes its best-ever layout - but the round is wasted.)
+        p1=0
     fi
 
-    nohup ./bin/sakgd -i "$src" -o "$WORK/round/$g.json" -t "$MIN" -p1 "$P1" \
-        -s "$((SEED + RANDOM % 100000))" "${extra[@]}" "${ARGS[@]}" \
+    nohup ./bin/sakgd -i "$src" -o "$WORK/round/$g.json" -t "$MIN" -p1 "$p1" \
+        -s "$((SEED + RANDOM % 100000))" ${extra[@]+"${extra[@]}"} ${ARGS[@]+"${ARGS[@]}"} \
         > "$WORK/round/$g.log" 2>&1 &
 
     running=$((running + 1))

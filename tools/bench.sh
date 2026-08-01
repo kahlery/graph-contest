@@ -35,7 +35,7 @@ running=0
 for f in "${specs[@]}"; do
     g=$(basename "$f" .json)
     nohup ./bin/sakgd -i "$f" -o "$OUT/$g.json" -t "$MIN" -p1 "$P1" -s "$SEED" \
-        "${ARGS[@]}" > "$OUT/$g.log" 2>&1 &
+        ${ARGS[@]+"${ARGS[@]}"} > "$OUT/$g.log" 2>&1 &
     running=$((running+1))
     if [ "$running" -ge "$JOBS" ]; then wait -n 2>/dev/null || wait; running=$((running-1)); fi
 done
