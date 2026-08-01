@@ -23,7 +23,7 @@ BINB1    := $(BINDIR)/approach1_baseline
 # src/common/engine.hpp for the shared graph/method registry they build on.
 TOOLS    := $(BINDIR)/stress_init $(BINDIR)/tripod_init $(BINDIR)/gradx_init \
             $(BINDIR)/run_contest \
-            $(BINDIR)/contest_orchestrate $(BINDIR)/server $(BINDIR)/bench_reheat_sharing
+            $(BINDIR)/contest_orchestrate $(BINDIR)/server $(BINDIR)/bench_reheat_sharing $(BINDIR)/xstat
 
 .PHONY: all clean run debug approach1 baseline tools gui stop orchestrate
 
@@ -78,6 +78,9 @@ $(BIN1): $(SRC1) | $(BINDIR)
 tools: $(TOOLS)
 
 $(BINDIR)/stress_init: src/tools/stress_init.cpp src/common/json.hpp src/common/subprocess.hpp src/common/paths.hpp | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+
+$(BINDIR)/xstat: src/tools/xstat.cpp src/common/json.hpp | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
 $(BINDIR)/tripod_init: src/tools/tripod_init.cpp src/common/json.hpp | $(BINDIR)
