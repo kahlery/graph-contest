@@ -3572,13 +3572,32 @@ int main(int argc, char** argv) {
          << " totalX=" << solver.bestX << "\n";
 
     // Sanity check: the saved best layout must be a valid GD-contest drawing.
+    // A vertex sitting on a non-incident edge makes that edge's crossing count
+    // ill-defined, so such a layout cannot be submitted.
+    //
+    // This is not supposed to happen - every move is gated on
+    // wouldCauseVertexEdgeOverlapFast - but it does, most often on the
+    // tight-canvas instances where free integer points are scarce (observed on
+    // Automatic-7: 500 nodes on a 115x116 grid). Bailing out threw away the
+    // whole run: one such abort discarded a k=30 layout while the champion
+    // stood at 47. Repairing instead nudges the few offending vertices to
+    // nearby free points and keeps the result; k is recomputed afterwards
+    // because the nudge can change it, and only a repair that still fails is
+    // fatal.
     {
         solver.restoreBest();
-        int veFinal = solver.findVertexEdgeOverlapFast();
-        if (veFinal >= 0) {
-            cerr << "ERROR: best layout has vertex-edge overlap (vertex "
-                 << veFinal << "). This should not happen.\n";
-            return 3;
+        if (solver.findVertexEdgeOverlapFast() >= 0) {
+            cerr << "[repair] best layout has vertex-edge overlap; repairing\n";
+            if (!solver.repairLayout() ||
+                solver.findVertexEdgeOverlapFast() >= 0) {
+                cerr << "ERROR: could not repair vertex-edge overlap in the "
+                        "best layout; refusing to write an invalid drawing.\n";
+                return 3;
+            }
+            solver.computeAllCrossings();
+            solver.saveBest();
+            cerr << "[repair] done: k=" << solver.bestK
+                 << " totalX=" << solver.bestX << "\n";
         }
     }
 
