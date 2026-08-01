@@ -25,7 +25,44 @@ TOOLS    := $(BINDIR)/stress_init $(BINDIR)/tripod_init $(BINDIR)/gradx_init \
             $(BINDIR)/run_contest \
             $(BINDIR)/contest_orchestrate $(BINDIR)/server $(BINDIR)/bench_reheat_sharing
 
-.PHONY: all clean run debug approach1 baseline tools
+.PHONY: all clean run debug approach1 baseline tools gui stop orchestrate
+
+# Explicit default goal: several tools (run_contest, contest_orchestrate,
+# server) shell out to a bare `make` via ensureBinaries() when a binary is
+# missing, so the default goal must always be "all" - relying on "whichever
+# rule appears first in the file" is fragile (e.g. a later-added phony
+# target like `orchestrate` would otherwise become the default and call
+# itself recursively).
+.DEFAULT_GOAL := all
+
+PORT ?= 8080
+
+# CLI equivalent of the GUI's orchestrator run. Defaults to graphs 5/6/8 of
+# internal-2026 with 6 workers and a 45-minute total wall-clock budget;
+# override any of SET/GRAPHS/WORKERS/BUDGET on the command line, e.g.:
+#   make orchestrate GRAPHS=instance_01,instance_02 WORKERS=8 BUDGET=1800
+SET     ?= internal-2026
+GRAPHS  ?= instance_05,instance_06,instance_08
+WORKERS ?= 6
+BUDGET  ?= 2700
+
+orchestrate: $(BINDIR)/contest_orchestrate
+	$(BINDIR)/contest_orchestrate --input-set $(SET) --only $(GRAPHS) \
+		--budget $(BUDGET) --workers $(WORKERS)
+
+# Builds the server, launches it in the background, and opens the control
+# panel in the default browser.
+gui: $(BINDIR)/server
+	"$(CURDIR)/$(BINDIR)/server" --port $(PORT) & \
+	sleep 0.5; \
+	echo http://localhost:$(PORT)
+
+# Kills any running processes started from this project's bin/ (server,
+# run_contest, contest_orchestrate, etc.), matched by full path so unrelated
+# processes elsewhere on the system are left untouched.
+stop:
+	-pkill -f "$(CURDIR)/$(BINDIR)/"
+	@echo "Stopped any running graph-contest processes."
 
 all: $(BIN) $(BIN1) tools
 

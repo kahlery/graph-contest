@@ -172,6 +172,9 @@ mjson::Value apiGraphs(const std::string& inputSet) {
     for (auto& e : scanGraphDir(inputSetDir(inputSet))) {
         mjson::Value o = mjson::Value::makeObject();
         o["name"] = e.name; o["n"] = e.n; o["m"] = e.m;
+        o["density"] = std::round(graphDensity(e.n, e.m) * 100.0) / 100.0;
+        o["size_class"] = groupForSize(e.n, e.m);
+        o["density_class"] = densityClass(e.n, e.m);
         arr.push_back(o);
     }
     return arr;
@@ -383,6 +386,9 @@ mjson::Value apiReport(const std::string& setName) {
         row["graph"] = g;
         row["nodes"] = gm.first;
         row["edges"] = gm.second;
+        row["density"] = std::round(graphDensity((int)gm.first, (int)gm.second) * 100.0) / 100.0;
+        row["size_class"] = groupForSize((int)gm.first, (int)gm.second);
+        row["density_class"] = densityClass((int)gm.first, (int)gm.second);
         row["best_k"] = best.has_value() ? mjson::Value(*best) : mjson::Value();
 
         mjson::Value results = mjson::Value::makeObject();

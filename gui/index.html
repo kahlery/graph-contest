@@ -204,13 +204,14 @@
                             <th class="num">k</th>
                             <th class="num">total_x</th>
                             <th class="num">nodes_edges</th>
+                            <th>class</th>
                             <th class="num">time_spent</th>
                             <th class="num">worker_count</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr class="empty-row">
-                            <td colspan="7">no results yet</td>
+                            <td colspan="8">no results yet</td>
                         </tr>
                     </tbody>
                 </table>
@@ -224,6 +225,7 @@
                             <tr id="reportThead">
                                 <th>graph</th>
                                 <th class="num">nodes_edges</th>
+                                <th>class</th>
                             </tr>
                         </thead>
                         <tbody id="reportTbody">
@@ -324,7 +326,7 @@
 
                 const thead = document.getElementById("reportThead")
                 thead.innerHTML =
-                    '<th>graph</th><th class="num">nodes_edges</th>' +
+                    '<th>graph</th><th class="num">nodes_edges</th><th>class</th>' +
                     methods
                         .map(
                             (m) =>
@@ -336,13 +338,17 @@
                 const tbody = document.getElementById("reportTbody")
                 if (!graphs.length) {
                     tbody.innerHTML = `<tr class="empty-row"><td colspan="${
-                        2 + methods.length * 5
+                        3 + methods.length * 5
                     }">no results yet</td></tr>`
                     return
                 }
                 tbody.innerHTML = graphs
                     .map((g) => {
-                        let row = `<tr><td>${g.graph}</td><td class="num">${g.nodes} & ${g.edges}</td>`
+                        let row = `<tr><td>${g.graph}</td><td class="num">${
+                            g.nodes
+                        } & ${g.edges}</td><td>${g.size_class ?? "—"}(${
+                            g.nodes + g.edges
+                        })/${g.density_class ?? "—"}(${g.density ?? "—"})</td>`
                         for (const m of methods) {
                             const c = (g.results && g.results[m]) || {}
                             const isBest =
@@ -372,7 +378,9 @@
           selectedGraphs.has(g.name) ? "checked" : ""
       } onchange="toggleGraph('${g.name}')">
       <span class="gname">${g.name}</span>
-      <span class="gmeta">n=${g.n} m=${g.m}</span>
+      <span class="gmeta">n=${g.n} m=${g.m} [${g.size_class ?? "—"}(${
+          g.n + g.m
+      })/${g.density_class ?? "—"}(${g.density ?? "—"})]</span>
     </label>`
                     )
                     .join("")
@@ -526,7 +534,7 @@
                         entries.length ? "— " + entries.length + " entries" : ""
                     if (!entries.length) {
                         tbody.innerHTML =
-                            '<tr class="empty-row"><td colspan="7">no results yet</td></tr>'
+                            '<tr class="empty-row"><td colspan="8">no results yet</td></tr>'
                     } else {
                         const rows = entries
                             .map(([key, v]) => {
@@ -538,6 +546,9 @@
                                     totalX: v.totalX,
                                     nodes: v.nodes,
                                     edges: v.edges,
+                                    density: v.density,
+                                    sizeClass: v.size_class,
+                                    densityClass: v.density_class,
                                     timeSpent: v.wall_clock_sec,
                                     workers: v.n_workers,
                                 }
@@ -571,7 +582,13 @@
                                         row.nodes ?? "—"
                                     } & ${
                                         row.edges ?? "—"
-                                    }</td><td class="num">${
+                                    }</td><td>${row.sizeClass ?? "—"}(${
+                                        row.nodes != null && row.edges != null
+                                            ? row.nodes + row.edges
+                                            : "—"
+                                    })/${row.densityClass ?? "—"}(${
+                                        row.density ?? "—"
+                                    })</td><td class="num">${
                                         row.timeSpent ?? "—"
                                     }</td><td class="num">${
                                         row.workers ?? "—"

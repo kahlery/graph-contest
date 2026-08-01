@@ -167,6 +167,20 @@ inline double budgetForSize(int n, int m, const std::map<std::string,double>& mi
     return minutesMap.at(groupForSize(n, m));
 }
 
+// Average degree (m/n) - same metric contest_orchestrate's coldMethod() uses
+// to pick sa vs sa-stress (DENSE_DENS = 8.0). Exposed here so callers besides
+// the orchestrator (the GUI, size-vs-density reporting) share one definition
+// instead of re-deriving it.
+inline double graphDensity(int n, int m) {
+    return (double)m / std::max(1, n);
+}
+inline std::string densityClass(int n, int m) {
+    double d = graphDensity(n, m);
+    if (d < 3.0) return "sparse";
+    if (d < 8.0) return "moderate";
+    return "dense";
+}
+
 // Every *.json in `dir` that parses as a graph (has a nodes array), as
 // (name = file stem, absolute path, n, m). Submissions/results key off the
 // original file name, so arbitrary input sets keep their own naming.
@@ -786,6 +800,15 @@ inline bool updateBest(const std::string& outRoot, mjson::Value& bests,
     entry["wall_clock_sec"] = wallClockSec.has_value() ? mjson::Value(*wallClockSec) : mjson::Value();
     entry["nodes"] = nodes.has_value() ? mjson::Value((long long)*nodes) : mjson::Value();
     entry["edges"] = edges.has_value() ? mjson::Value((long long)*edges) : mjson::Value();
+    if (nodes.has_value() && edges.has_value()) {
+        entry["density"] = std::round(graphDensity(*nodes, *edges) * 100.0) / 100.0;
+        entry["size_class"] = groupForSize(*nodes, *edges);
+        entry["density_class"] = densityClass(*nodes, *edges);
+    } else {
+        entry["density"] = mjson::Value();
+        entry["size_class"] = mjson::Value();
+        entry["density_class"] = mjson::Value();
+    }
     bests[key] = entry;
     return true;
 }
