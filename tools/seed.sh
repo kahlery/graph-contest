@@ -35,6 +35,10 @@ ONLY=${ONLY:-}
 GXFRAC=${GXFRAC:-0.15}
 MAXM=${MAXM:-6000}
 INIT=${INIT:-stress}
+# gradx_init is multithreaded and its init quality drives how deep the SA
+# lands, so starving it is counterproductive (engine.hpp records eight
+# 2-thread copies costing instance_06 ~25 k-points versus one full-width run).
+GXTHREADS=${GXTHREADS:-1}
 
 mkdir -p "$WORK/best" "$WORK/seed"
 
@@ -58,7 +62,8 @@ one() {
         # to the stress path.
         [ "$m" -gt "$MAXM" ] && { echo "  skip $g (m=$m > $MAXM for gradx)"; return; }
         ./bin/gradx_init -i "$f" -o "$WORK/seed/$g.gx.json" -t "$gxsec" \
-            --threads 1 -s "$((SEED % 100000))" > "$WORK/seed/$g.gx.log" 2>&1
+            --threads "$GXTHREADS" -s "$((SEED % 100000))" \
+            > "$WORK/seed/$g.gx.log" 2>&1
     else
         ./bin/stress_init -i "$f" -o "$WORK/seed/$g.gx.json" -t "$gxsec" \
             -s "$((SEED % 100000))" > "$WORK/seed/$g.gx.log" 2>&1
