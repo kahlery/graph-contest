@@ -731,6 +731,7 @@ public:
                                      // low-X drawing; late high p spends that
                                      // slack on flattening the tail.
     int            pNormCur  = 6;    // p in force right now (ramped in runSA)
+    bool           pNormAuto = false; // pick p from the live k (see below)
     bool           fitTarget = false; // phase-2 fitness = excess over targetK
     int            targetK   = -1;    // current feasibility target (see fitOf)
     int            targetK0  = 0;     // user-pinned start target, 0 = auto
@@ -2051,6 +2052,139 @@ public:
     // every incremental structure in sync — the attemptSwap pattern); on
     // reject or invalidity the translation is replayed in reverse.
     // Returns true iff the move was attempted.
+// Fitness of a planned move under the active --fit setting. A member
+// rather than a lambda inside runSA so the coupled-move helpers
+// (attemptEdgeMove / attemptPairMove) can score with the *same*
+// objective as the main loop; they used to hardcode the old
+// dGlobalK/dCross rule, so with --fit pnorm the --edge-move budget was
+// pulling against the objective every other move made.
+double fitOfPlan(const MovePlan& pl, int phase) {
+        if (phase == 1) {
+            if (pNormP1 <= 0) return (double)pl.dCross;
+            const double inv = 1.0 / (double)max(1, kVal);
+            double s = 0.0;
+            for (auto& ec : pl.edgeCounts) {
+                s += ipow((double)std::get<2>(ec) * inv, pNormP1)
+                   - ipow((double)std::get<1>(ec) * inv, pNormP1);
+            }
+            return s * (double)max(1, kVal) / (double)pNormP1;
+        }
+        // Soft ceiling on total crossings. Lowering the bottleneck almost
+        // always costs total crossings - the optimiser buys a flatter tail
+        // by spreading the drawing out - and since the floor ceil(2X/m)
+        // rises with X, that trade eventually works against itself: p24 on
+        // instance_08 settles at k=64 with X=30k, whereas the same k/mean
+        // ratio held at the X=22k phase 1 can reach would give k~47. This
+        // term prices crossings past the cap so balance has to be found
+        // within a crossing budget instead of by inflating one.
+        auto capPenalty = [&](const MovePlan& pl) -> double {
+            if (xCap <= 0) return 0.0;
+            ll xo = totalX, xn = totalX + pl.dCross;
+            return xCapW * (double)(max(0LL, xn - xCap) - max(0LL, xo - xCap));
+        };
+        if (fitTarget) {
+            // Feasibility formulation: instead of minimising the maximum
+            // directly, fix a target K and minimise only how far edges
+            // stick out above it, w(c) = e^2 + e for e = max(0, c - K).
+            // Once every edge fits under K the layout is feasible, K drops
+            // by one and the search restarts against the tighter target.
+            //
+            // Why this beats optimising the max itself: every edge at or
+            // below K scores exactly 0, so no search effort is spent
+            // shuffling crossings among edges that are already fine - the
+            // entire gradient points at the violating set. The quadratic
+            // term additionally levels *within* that set (moving a crossing
+            // from a K+5 edge to a K+1 edge is an improvement), which the
+            // plain excess count would score as neutral.
+            //
+            // dCross enters with a tiny weight purely as a tie-break: moves
+            // that touch no violating edge are otherwise all equal, and
+            // without it the walk drifts into needlessly crossing-heavy
+            // layouts that make the next target harder to reach.
+            double d = 0.0;
+            for (auto& ec : pl.edgeCounts) {
+                int eo = max(0, std::get<1>(ec) - targetK);
+                int en = max(0, std::get<2>(ec) - targetK);
+                d += (double)(en * en + en) - (double)(eo * eo + eo);
+            }
+            // w' grows like 2e, so raw deltas scale with how far the
+            // worst edge currently sits above the target. Dividing by that
+            // span keeps a typical move at O(1) whatever the target is,
+            // which is what makes one temperature schedule work for both
+            // the wide-open start and the nearly-feasible endgame.
+            d /= (double)max(1, kVal - targetK);
+            return d + 1e-3 * (double)pl.dCross + capPenalty(pl);
+        }
+        if (fitPNorm) {
+            // Soft-max bottleneck fitness: E = sum_e (c_e / k)^p.
+            //
+            // The dLocalK fitness below is a plateau: the vast majority of
+            // moves leave the local maximum untouched and score exactly 0,
+            // so the walk carries no information about the *tail* of edges
+            // sitting just under k - yet those are precisely the edges that
+            // must be relieved before k itself can fall. Raising each count
+            // to a power p makes the marginal value of unloading an edge
+            // scale as (c_e/k)^(p-1): ~1 at the bottleneck, ~0 for a lightly
+            // loaded edge, and graded in between. That is the gradient the
+            // plateau lacks, and it prices redistribution automatically -
+            // moving a crossing from a level-k edge onto a level-k/2 edge is
+            // a strict improvement even though k is unchanged.
+            //
+            // Scaling by k/p normalises one unit to "one crossing off a
+            // bottleneck edge", keeping the temperature schedule comparable
+            // to the dLocalK unit. Dividing by k first also keeps every
+            // base in [0, ~1], so large p cannot overflow.
+            const double inv = 1.0 / (double)max(1, kVal);
+            double s = 0.0;
+            for (auto& ec : pl.edgeCounts) {
+                s += ipow((double)std::get<2>(ec) * inv, pNormCur)
+                   - ipow((double)std::get<1>(ec) * inv, pNormCur);
+            }
+            return s * (double)max(1, kVal) / (double)pNormCur + capPenalty(pl);
+        }
+        if (fitSq) {
+            // Squared-crossings fitness: dE = sum(newC^2 - oldC^2),
+            // normalised so that +-1 crossing on a bottleneck-level
+            // edge costs ~1 (comparable to the dLocalK unit below).
+            double dsq = 0.0;
+            for (auto& ec : pl.edgeCounts) {
+                double oldC = (double)std::get<1>(ec);
+                double newC = (double)std::get<2>(ec);
+                dsq += newC * newC - oldC * oldC;
+            }
+            return dsq / max(1.0, 2.0 * (double)kVal);
+        }
+        int dLocalK = pl.newLocalK - pl.oldLocalK;
+        if (dLocalK != 0) return (double)dLocalK;
+        // Lexicographic middle objective: before k itself can drop,
+        // every edge sitting at the bottleneck level k must lose a
+        // crossing. Pricing one of the cntPerK[k] top-level edges at
+        // 1/cntPerK[k] makes clearing the whole level worth ~1 unit of k.
+        int dTop = 0;
+        if (lexK) {
+            for (auto& ec : pl.edgeCounts) {
+                int oldC = std::get<1>(ec);
+                int newC = std::get<2>(ec);
+                dTop += (int)(newC >= kVal) - (int)(oldC >= kVal);
+            }
+        }
+        if (dTop != 0) return (double)dTop / max(1, cntPerK[kVal]);
+        if (fitSq2) {
+            // k-neutral tie-break by squared-crossings delta: among moves
+            // that don't touch the bottleneck, prefer ones that unload
+            // high-crossing edges.
+            double dsq = 0.0;
+            for (auto& ec : pl.edgeCounts) {
+                double oldC = (double)std::get<1>(ec);
+                double newC = (double)std::get<2>(ec);
+                dsq += newC * newC - oldC * oldC;
+            }
+            return dsq / max(1.0, 2.0 * (double)kVal *
+                                  (double)max<ll>(1, totalX));
+        }
+        return (double)pl.dCross / max(1.0, (double)max<ll>(1, totalX));
+}
+
     bool attemptEdgeMove(int e, double sigma, int phase, double currentTemp,
                          MovePlan& plan) {
         int u = edges[e].u, v = edges[e].v;
@@ -2079,20 +2213,22 @@ public:
         ll  totalX0 = totalX;
         int kVal0   = kVal;
 
-        planMove(u, NU, plan); commitMove(plan);
-        planMove(v, NV, plan); commitMove(plan);
+        // Score both halves under the active fitness and sum. Each plan's
+        // per-edge terms are (new - old) for that step, so chaining the second
+        // plan onto the first telescopes to (final - initial) per edge - the
+        // joint delta, exactly what the acceptance test needs.
+        planMove(u, NU, plan);
+        double dE = fitOfPlan(plan, phase);
+        commitMove(plan);
+        planMove(v, NV, plan);
+        dE += fitOfPlan(plan, phase);
+        commitMove(plan);
 
         ll  dCross   = totalX - totalX0;
         int dGlobalK = kVal - kVal0;
 
         bool valid = !wouldCauseVertexEdgeOverlapFast(u, NU) &&
                      !wouldCauseVertexEdgeOverlapFast(v, NV);
-
-        double dE;
-        if (phase == 1)         dE = (double)dCross;
-        else if (dGlobalK != 0) dE = (double)dGlobalK;
-        else                    dE = (double)dCross /
-                                     max(1.0, (double)max<ll>(1, totalX));
 
         bool acc = valid && acceptByRule(dE, currentTemp);
         if (moveLog && phase == 2)
@@ -2362,130 +2498,7 @@ public:
         // Phase fitness of a planned move (shared by the single-proposal path
         // and the best-of-C benefit analysis below).
         auto fitOf = [&](const MovePlan& pl) -> double {
-            if (phase == 1) {
-                if (pNormP1 <= 0) return (double)pl.dCross;
-                const double inv = 1.0 / (double)max(1, kVal);
-                double s = 0.0;
-                for (auto& ec : pl.edgeCounts) {
-                    s += ipow((double)std::get<2>(ec) * inv, pNormP1)
-                       - ipow((double)std::get<1>(ec) * inv, pNormP1);
-                }
-                return s * (double)max(1, kVal) / (double)pNormP1;
-            }
-            // Soft ceiling on total crossings. Lowering the bottleneck almost
-            // always costs total crossings - the optimiser buys a flatter tail
-            // by spreading the drawing out - and since the floor ceil(2X/m)
-            // rises with X, that trade eventually works against itself: p24 on
-            // instance_08 settles at k=64 with X=30k, whereas the same k/mean
-            // ratio held at the X=22k phase 1 can reach would give k~47. This
-            // term prices crossings past the cap so balance has to be found
-            // within a crossing budget instead of by inflating one.
-            auto capPenalty = [&](const MovePlan& pl) -> double {
-                if (xCap <= 0) return 0.0;
-                ll xo = totalX, xn = totalX + pl.dCross;
-                return xCapW * (double)(max(0LL, xn - xCap) - max(0LL, xo - xCap));
-            };
-            if (fitTarget) {
-                // Feasibility formulation: instead of minimising the maximum
-                // directly, fix a target K and minimise only how far edges
-                // stick out above it, w(c) = e^2 + e for e = max(0, c - K).
-                // Once every edge fits under K the layout is feasible, K drops
-                // by one and the search restarts against the tighter target.
-                //
-                // Why this beats optimising the max itself: every edge at or
-                // below K scores exactly 0, so no search effort is spent
-                // shuffling crossings among edges that are already fine - the
-                // entire gradient points at the violating set. The quadratic
-                // term additionally levels *within* that set (moving a crossing
-                // from a K+5 edge to a K+1 edge is an improvement), which the
-                // plain excess count would score as neutral.
-                //
-                // dCross enters with a tiny weight purely as a tie-break: moves
-                // that touch no violating edge are otherwise all equal, and
-                // without it the walk drifts into needlessly crossing-heavy
-                // layouts that make the next target harder to reach.
-                double d = 0.0;
-                for (auto& ec : pl.edgeCounts) {
-                    int eo = max(0, std::get<1>(ec) - targetK);
-                    int en = max(0, std::get<2>(ec) - targetK);
-                    d += (double)(en * en + en) - (double)(eo * eo + eo);
-                }
-                // w' grows like 2e, so raw deltas scale with how far the
-                // worst edge currently sits above the target. Dividing by that
-                // span keeps a typical move at O(1) whatever the target is,
-                // which is what makes one temperature schedule work for both
-                // the wide-open start and the nearly-feasible endgame.
-                d /= (double)max(1, kVal - targetK);
-                return d + 1e-3 * (double)pl.dCross + capPenalty(pl);
-            }
-            if (fitPNorm) {
-                // Soft-max bottleneck fitness: E = sum_e (c_e / k)^p.
-                //
-                // The dLocalK fitness below is a plateau: the vast majority of
-                // moves leave the local maximum untouched and score exactly 0,
-                // so the walk carries no information about the *tail* of edges
-                // sitting just under k - yet those are precisely the edges that
-                // must be relieved before k itself can fall. Raising each count
-                // to a power p makes the marginal value of unloading an edge
-                // scale as (c_e/k)^(p-1): ~1 at the bottleneck, ~0 for a lightly
-                // loaded edge, and graded in between. That is the gradient the
-                // plateau lacks, and it prices redistribution automatically -
-                // moving a crossing from a level-k edge onto a level-k/2 edge is
-                // a strict improvement even though k is unchanged.
-                //
-                // Scaling by k/p normalises one unit to "one crossing off a
-                // bottleneck edge", keeping the temperature schedule comparable
-                // to the dLocalK unit. Dividing by k first also keeps every
-                // base in [0, ~1], so large p cannot overflow.
-                const double inv = 1.0 / (double)max(1, kVal);
-                double s = 0.0;
-                for (auto& ec : pl.edgeCounts) {
-                    s += ipow((double)std::get<2>(ec) * inv, pNormCur)
-                       - ipow((double)std::get<1>(ec) * inv, pNormCur);
-                }
-                return s * (double)max(1, kVal) / (double)pNormCur + capPenalty(pl);
-            }
-            if (fitSq) {
-                // Squared-crossings fitness: dE = sum(newC^2 - oldC^2),
-                // normalised so that +-1 crossing on a bottleneck-level
-                // edge costs ~1 (comparable to the dLocalK unit below).
-                double dsq = 0.0;
-                for (auto& ec : pl.edgeCounts) {
-                    double oldC = (double)std::get<1>(ec);
-                    double newC = (double)std::get<2>(ec);
-                    dsq += newC * newC - oldC * oldC;
-                }
-                return dsq / max(1.0, 2.0 * (double)kVal);
-            }
-            int dLocalK = pl.newLocalK - pl.oldLocalK;
-            if (dLocalK != 0) return (double)dLocalK;
-            // Lexicographic middle objective: before k itself can drop,
-            // every edge sitting at the bottleneck level k must lose a
-            // crossing. Pricing one of the cntPerK[k] top-level edges at
-            // 1/cntPerK[k] makes clearing the whole level worth ~1 unit of k.
-            int dTop = 0;
-            if (lexK) {
-                for (auto& ec : pl.edgeCounts) {
-                    int oldC = std::get<1>(ec);
-                    int newC = std::get<2>(ec);
-                    dTop += (int)(newC >= kVal) - (int)(oldC >= kVal);
-                }
-            }
-            if (dTop != 0) return (double)dTop / max(1, cntPerK[kVal]);
-            if (fitSq2) {
-                // k-neutral tie-break by squared-crossings delta: among moves
-                // that don't touch the bottleneck, prefer ones that unload
-                // high-crossing edges.
-                double dsq = 0.0;
-                for (auto& ec : pl.edgeCounts) {
-                    double oldC = (double)std::get<1>(ec);
-                    double newC = (double)std::get<2>(ec);
-                    dsq += newC * newC - oldC * oldC;
-                }
-                return dsq / max(1.0, 2.0 * (double)kVal *
-                                      (double)max<ll>(1, totalX));
-            }
-            return (double)pl.dCross / max(1.0, (double)max<ll>(1, totalX));
+            return fitOfPlan(pl, phase);
         };
 
         auto reportTime = [&](double currentTemp) {
@@ -2511,6 +2524,8 @@ public:
         }
         // p-ramp: p0 -> pNormP over the phase budget (see pNormP0's note).
         pNormCur = (fitPNorm && pNormP0 > 0) ? pNormP0 : pNormP;
+        if (fitPNorm && pNormAuto)
+            pNormCur = max(4, min(400, (int)llround(0.5 * (double)kVal)));
         double nextReport = 0.5;        // first dump comes quickly
         double reportEvery = 30.0;      // log to stderr every 30s
         double nextStatus  = 0.0;       // immediate first dump
@@ -2670,6 +2685,19 @@ public:
                 if (el >= nextReport) {
                     if (el >= reportEvery) reportTime(currentTemp);
                     nextReport = el + reportEvery;
+                }
+                // Auto exponent. The marginal value of relieving an edge one
+                // level below the bottleneck is (1 - 1/k)^(p-1); holding that
+                // at ~0.6 keeps a usable gradient over the top of the
+                // distribution whatever the scale of k, and solving it gives
+                // p ~ 0.5*k. A fixed p cannot serve both ends of this contest:
+                // p=32 is right at instance_08's k~62, but at Automatic-9's
+                // k=10 it leaves that weight at 0.04 (only the very top edges
+                // carry signal - the plateau the p-norm exists to avoid),
+                // while at Automatic-6's k~520 it is far too shallow to
+                // distinguish the tail at all.
+                if (fitPNorm && pNormAuto) {
+                    pNormCur = max(4, min(400, (int)llround(0.5 * (double)kVal)));
                 }
                 if (fitPNorm && pNormP0 > 0 && curBudget > 0.0) {
                     double frac = min(1.0, el / curBudget);
@@ -2924,7 +2952,9 @@ int main(int argc, char** argv) {
     solver.xCap           = max(0LL, xcapArg);
     solver.xCapRel        = max(0.0, xcapRelArg);
     solver.xCapW          = xcapWArg;
-    solver.pNormP         = max(1, min(40, pnormArg));
+    // --pnorm 0 selects the auto exponent (~0.5 * live k).
+    solver.pNormAuto      = (pnormArg == 0);
+    solver.pNormP         = max(1, min(400, pnormArg ? pnormArg : 32));
     solver.pNormP0        = pnorm0Arg ? max(1, min(40, pnorm0Arg)) : 0;
     solver.pNormCur       = solver.pNormP;
     solver.fitSq2         = (fitArg == "sq2");
