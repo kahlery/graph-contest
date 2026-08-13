@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <map>
 #include <optional>
@@ -73,6 +74,43 @@ double clampd(double x, double lo, double hi) { return std::max(lo, std::min(hi,
 bool commandExists(const std::string& name) {
     std::string cmd = "command -v " + name + " > /dev/null 2>&1";
     return std::system(cmd.c_str()) == 0;
+}
+
+struct GitProvenance {
+    std::string commit = "unknown";
+    std::string sourceDiffFingerprint = "clean";
+    bool sourceDirty = false;
+};
+
+GitProvenance gitProvenance() {
+    GitProvenance p;
+    try {
+        auto head = proc::runCaptured(
+            {"git", "-C", ROOT(), "rev-parse", "HEAD"}, "", 5.0);
+        if (head.ok) p.commit = trim(head.stdoutData);
+
+        // Hash only code/config documentation in scope. Generated layouts in
+        // data/output are deliberately excluded, so provenance stays useful
+        // even after many contest runs have accumulated locally.
+        auto diff = proc::runCaptured(
+            {"git", "-C", ROOT(), "diff", "--no-ext-diff", "HEAD", "--",
+             "Makefile", "README.md", "src", "docs/notes"}, "", 10.0);
+        if (diff.ok && !diff.stdoutData.empty()) {
+            p.sourceDirty = true;
+            uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit
+            for (unsigned char c : diff.stdoutData) {
+                h ^= c;
+                h *= 1099511628211ULL;
+            }
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+            p.sourceDiffFingerprint = buf;
+        }
+    } catch (...) {
+        // Provenance is metadata; inability to invoke git must never prevent
+        // a deadline-bound contest run from starting.
+    }
+    return p;
 }
 
 // --------------------------------------------------------------------- //
@@ -134,6 +172,7 @@ struct GraphState {
     bool hubSkew = false; // degree skew >= 4 (scale-free / hub-dominated)
     bool bannedByPanel = false;
     std::vector<std::array<double,3>> hist;   // (wall, bestK, bestX) per lease
+    std::array<OperatorStat,6> operatorStats{}; // Daniel operators, all workers/leases
     double lastDk = 0.0, lastDxf = 0.0;
     double spent = 0.0;
     bool done = false;
@@ -146,13 +185,19 @@ public:
                         double denseDens, std::optional<double> quantumOverride,
                         const std::string& only = "",
                         const std::map<std::string,int>& targets = {},
-                        int uiPort = 0)
+                        int uiPort = 0,
+                        const std::string& searchProfile = "current",
+                        const std::string& baselineRun = "")
         : budget_(budget), W_(workers), seed_(seed), xchg_(xchgRounds), half_(halfShare),
           denseDens_(denseDens), qOverride_(quantumOverride), outRoot_(outDir),
-          label_(pathBasename(graphsDir)), uiPort_(uiPort) {
+          label_(pathBasename(graphsDir)), searchProfile_(searchProfile),
+          baselineRun_(baselineRun), uiPort_(uiPort) {
+        if (!knownSearchProfile(searchProfile_))
+            throw std::runtime_error("unknown search profile: " + searchProfile_);
         runId_ = "corch_" + std::to_string((long long)time(nullptr));
         runDir_ = outRoot_ + "/runs/" + runId_;
         mkdirs(runDir_);
+        provenance_ = gitProvenance();
         bests_ = loadJsonDefault(outRoot_ + "/bests.json", mjson::Value::makeObject());
         noGraphviz_ = !commandExists("sfdp") && !commandExists("neato");
         G_ = build(graphsDir, only);
@@ -190,7 +235,9 @@ private:
     double budget_; int W_; long long seed_; int xchg_; bool half_; double denseDens_;
     std::optional<double> qOverride_; std::string outRoot_;
     std::string label_; // input-set / graphs-dir name, prefixed onto bests.json keys
+    std::string searchProfile_, baselineRun_;
     std::string runId_, runDir_;
+    GitProvenance provenance_;
     mjson::Value bests_;
     bool noGraphviz_ = false;
     std::map<std::string, GraphState> G_;
@@ -216,7 +263,8 @@ private:
                << ",\"x\":" << (g.bestX.has_value() ? std::to_string(*g.bestX) : "null")
                << ",\"sec\":" << (int)g.spent << ",\"leases\":" << g.leases
                << ",\"done\":" << (g.done ? "true" : "false")
-               << ",\"method0\":\"" << g.method0 << "\",\"hist\":[";
+               << ",\"method0\":\"" << g.method0 << "\""
+               << ",\"profile\":\"" << searchProfile_ << "\",\"hist\":[";
             for (size_t i = 0; i < g.hist.size(); i++) {
                 if (i) os << ",";
                 os << "[" << (int)g.hist[i][0] << "," << (long long)g.hist[i][1]
@@ -455,9 +503,10 @@ private:
         leaseTimeout_ = std::max(45.0, q * OVERRUN);
 
         char buf[256];
-        snprintf(buf, sizeof(buf), "lease %-14s %-9s warm=%s q=%.0fs xchg=%d%s (k=%s, lease#%d)",
+        snprintf(buf, sizeof(buf), "lease %-14s %-9s warm=%s q=%.0fs xchg=%d%s profile=%s (k=%s, lease#%d)",
                  nm.c_str(), method.c_str(), warm.empty() ? "N" : "Y", q, xchg,
                  (xchg > 1 && half_) ? "h" : "",
+                 searchProfile_.c_str(),
                  g.bestK.has_value() ? std::to_string(*g.bestK).c_str() : "None", g.leases);
         log(buf);
         panel_.setCurrent(nm, method, qdir, q, now());
@@ -476,7 +525,9 @@ private:
                                    (cold || coldRestart) ? 0.2 : 0.0,
                                    seed_ + (long long)g.leases * 100, qdir, W_, NH_SIZE, NH_CANDS,
                                    /*lnsFrac*/ 0.35, 0, warm, xchg,
-                                   half_ && xchg > 1, rf);
+                                   half_ && xchg > 1, rf, searchProfile_);
+            for (const auto& worker : combo.workers)
+                addOperatorStats(g.operatorStats, worker.operatorStats);
             bestW = combo.best;
             wall = combo.wallTotal;
         } catch (std::exception& e) {
@@ -698,6 +749,184 @@ private:
     }
 
     // --- output ----------------------------------------------------------- //
+    static mjson::Value operatorStatsJson(
+            const std::array<OperatorStat,6>& stats) {
+        mjson::Value out = mjson::Value::makeObject();
+        for (size_t i = 0; i < stats.size(); i++) {
+            const auto& st = stats[i];
+            mjson::Value s = mjson::Value::makeObject();
+            s["trials"] = st.trials;
+            s["accepted"] = st.accepted;
+            s["wins"] = st.wins;
+            s["accept_rate"] = st.acceptRate();
+            s["success_rate"] = st.successRate();
+            s["net_dk"] = st.netDK;
+            s["net_dx"] = st.netDX;
+            s["net_k_reduction"] = -st.netDK;
+            s["net_totalX_reduction"] = -st.netDX;
+            s["mean_q"] = st.meanQ();
+            out[DANIEL_OP_NAMES[i]] = s;
+        }
+        return out;
+    }
+
+    struct RunMetrics {
+        long long sumK = 0;
+        long long sumX = 0;
+        int worstK = -1;
+        int graphs = 0;
+    };
+
+    static RunMetrics runMetrics(const mjson::Value& summary) {
+        RunMetrics m;
+        if (!summary.isObj()) return m;
+        for (const auto& [name, s] : summary.asObject()) {
+            (void)name;
+            if (!s.has("k") || s["k"].isNull()) continue;
+            int k = s["k"].asInt();
+            m.sumK += k;
+            m.worstK = std::max(m.worstK, k);
+            if (s.has("totalX") && !s["totalX"].isNull())
+                m.sumX += s["totalX"].asLL();
+            m.graphs++;
+        }
+        return m;
+    }
+
+    static void metricsJson(mjson::Value& dst, const RunMetrics& m) {
+        dst["graphs"] = m.graphs;
+        dst["sum_k"] = m.sumK;
+        dst["worst_k"] = m.worstK;
+        dst["sum_totalX"] = m.sumX;
+    }
+
+    void writeComparison(const mjson::Value& candidate,
+                         const std::string& subDir) {
+        if (baselineRun_.empty()) return;
+        std::string baselinePath = baselineRun_;
+        if (!fileExists(baselinePath))
+            baselinePath = outRoot_ + "/runs/" + baselineRun_ +
+                           "/orchestration.json";
+        if (!fileExists(baselinePath)) {
+            log("comparison skipped: baseline report not found: " + baselinePath);
+            return;
+        }
+
+        mjson::Value baseline;
+        try { baseline = mjson::parseFile(baselinePath); }
+        catch (const std::exception& e) {
+            log(std::string("comparison skipped: ") + e.what());
+            return;
+        }
+        if (!baseline.has("summary") || !candidate.has("summary")) {
+            log("comparison skipped: report has no summary");
+            return;
+        }
+
+        const auto& aSummary = baseline["summary"];
+        const auto& bSummary = candidate["summary"];
+        RunMetrics a = runMetrics(aSummary), b = runMetrics(bSummary);
+
+        mjson::Value cmp = mjson::Value::makeObject();
+        cmp["baseline_run"] = baseline.has("run_id")
+            ? baseline["run_id"] : mjson::Value(baselineRun_);
+        cmp["candidate_run"] = candidate["run_id"];
+        cmp["candidate_profile"] = searchProfile_;
+        cmp["seed"] = seed_;
+        cmp["primary_metric"] = "sum_k";
+        metricsJson(cmp["baseline"], a);
+        metricsJson(cmp["candidate"], b);
+        cmp["delta"]["sum_k"] = b.sumK - a.sumK;
+        cmp["delta"]["worst_k"] = b.worstK - a.worstK;
+        cmp["delta"]["sum_totalX"] = b.sumX - a.sumX;
+        cmp["primary_success"] =
+            (a.graphs == b.graphs && b.graphs > 0 && b.sumK < a.sumK);
+
+        std::string winner = "tie";
+        if (a.graphs != b.graphs || a.graphs == 0) {
+            winner = "incomparable";
+        } else if (b.sumK != a.sumK) {
+            winner = b.sumK < a.sumK ? "candidate" : "baseline";
+        } else if (b.worstK != a.worstK) {
+            winner = b.worstK < a.worstK ? "candidate" : "baseline";
+        } else if (b.sumX != a.sumX) {
+            winner = b.sumX < a.sumX ? "candidate" : "baseline";
+        }
+        cmp["winner"] = winner;
+
+        std::set<std::string> graphNames;
+        for (const auto& [nm, _] : aSummary.asObject()) graphNames.insert(nm);
+        for (const auto& [nm, _] : bSummary.asObject()) graphNames.insert(nm);
+        for (const auto& nm : graphNames) {
+            auto ai = aSummary.asObject().find(nm);
+            auto bi = bSummary.asObject().find(nm);
+            mjson::Value row = mjson::Value::makeObject();
+            auto putSide = [&](const char* side, const mjson::Value* s) {
+                if (!s) { row[side] = mjson::Value(); return; }
+                mjson::Value v = mjson::Value::makeObject();
+                v["k"] = s->has("k") ? (*s)["k"] : mjson::Value();
+                v["totalX"] = s->has("totalX") ? (*s)["totalX"] : mjson::Value();
+                v["seconds"] = s->has("seconds") ? (*s)["seconds"] : mjson::Value();
+                v["leases"] = s->has("leases") ? (*s)["leases"] : mjson::Value();
+                row[side] = v;
+            };
+            const mjson::Value* av = ai == aSummary.asObject().end() ? nullptr : &ai->second;
+            const mjson::Value* bv = bi == bSummary.asObject().end() ? nullptr : &bi->second;
+            putSide("baseline", av); putSide("candidate", bv);
+            if (av && bv && av->has("k") && bv->has("k") &&
+                !(*av)["k"].isNull() && !(*bv)["k"].isNull())
+                row["delta_k"] = (*bv)["k"].asLL() - (*av)["k"].asLL();
+            if (av && bv && av->has("totalX") && bv->has("totalX") &&
+                !(*av)["totalX"].isNull() && !(*bv)["totalX"].isNull())
+                row["delta_totalX"] = (*bv)["totalX"].asLL() -
+                                      (*av)["totalX"].asLL();
+            cmp["graphs"][nm] = row;
+        }
+
+        std::string jsonPath = runDir_ + "/comparison.json";
+        std::string mdPath = runDir_ + "/comparison.md";
+        saveJson(jsonPath, cmp);
+        copyFile(jsonPath, subDir + "/COMPARISON.json");
+
+        FILE* f = fopen(mdPath.c_str(), "w");
+        if (f) {
+            fprintf(f, "# Full-hour A/B: %s vs %s\n\n",
+                    candidate["run_id"].asString().c_str(),
+                    baseline.has("run_id") ? baseline["run_id"].asString().c_str()
+                                            : baselineRun_.c_str());
+            fprintf(f, "Profile: `%s` · seed: `%lld` · budget: `%.0fs` · workers: `%d`\n\n",
+                    searchProfile_.c_str(), seed_, budget_, W_);
+            fprintf(f, "| graph | A k | B k | Δk | A totalX | B totalX | ΔtotalX |\n");
+            fprintf(f, "|---|---:|---:|---:|---:|---:|---:|\n");
+            for (const auto& nm : graphNames) {
+                const auto& row = cmp["graphs"][nm];
+                auto num = [](const mjson::Value& v) {
+                    return v.isNull() ? std::string("—") : std::to_string(v.asLL());
+                };
+                const auto& ar = row["baseline"];
+                const auto& br = row["candidate"];
+                mjson::Value nullV;
+                const auto& ak = ar.isNull() ? nullV : ar["k"];
+                const auto& bk = br.isNull() ? nullV : br["k"];
+                const auto& ax = ar.isNull() ? nullV : ar["totalX"];
+                const auto& bx = br.isNull() ? nullV : br["totalX"];
+                const auto& dk = row.has("delta_k") ? row["delta_k"] : nullV;
+                const auto& dx = row.has("delta_totalX") ? row["delta_totalX"] : nullV;
+                fprintf(f, "| %s | %s | %s | %s | %s | %s | %s |\n",
+                        nm.c_str(), num(ak).c_str(), num(bk).c_str(), num(dk).c_str(),
+                        num(ax).c_str(), num(bx).c_str(), num(dx).c_str());
+            }
+            fprintf(f, "\n| aggregate | A | B | Δ (B−A) |\n");
+            fprintf(f, "|---|---:|---:|---:|\n");
+            fprintf(f, "| sum-k | %lld | %lld | %+lld |\n", a.sumK, b.sumK, b.sumK-a.sumK);
+            fprintf(f, "| worst-k | %d | %d | %+d |\n", a.worstK, b.worstK, b.worstK-a.worstK);
+            fprintf(f, "| Σ totalX | %lld | %lld | %+lld |\n", a.sumX, b.sumX, b.sumX-a.sumX);
+            fprintf(f, "\nWinner: **%s**\n", winner.c_str());
+            fclose(f);
+            copyFile(mdPath, subDir + "/COMPARISON.md");
+        }
+    }
+
     mjson::Value finalize() {
         saveJson(outRoot_ + "/bests.json", bests_);
         std::string subDir = outRoot_ + "/submission/" + runId_;
@@ -718,9 +947,13 @@ private:
             s["leases"] = g.leases;
             s["converged"] = g.done;
             s["method0"] = g.method0;
+            s["chain_family"] = g.chainFam;
+            s["search_profile"] = searchProfile_;
+            s["operator_stats"] = operatorStatsJson(g.operatorStats);
             s["n"] = g.n; s["m"] = g.m;
             s["submission"] = sub;
             s["verified_k"] = v.has_value() ? mjson::Value((long long)v->k) : mjson::Value();
+            s["verified_totalX"] = v.has_value() ? mjson::Value((long long)v->totalX) : mjson::Value();
             s["valid"] = v.has_value() ? mjson::Value(v->valid) : mjson::Value(g.m == 0);
             summary[nm] = s;
         }
@@ -730,6 +963,13 @@ private:
         report["workers"] = W_;
         report["xchg_rounds"] = xchg_;
         report["half_share"] = half_;
+        report["seed"] = seed_;
+        report["search_profile"] = searchProfile_;
+        report["external_warm_start"] = false;
+        report["git_commit"] = provenance_.commit;
+        report["git_source_dirty"] = provenance_.sourceDirty;
+        report["source_diff_fingerprint"] = provenance_.sourceDiffFingerprint;
+        if (!baselineRun_.empty()) report["baseline_run"] = baselineRun_;
         report["wall_sec"] = std::round(now() * 10.0) / 10.0;
         report["reserve_sec"] = std::round(reserve() * 10.0) / 10.0;
         report["max_overrun_sec"] = std::round(maxOverrun_ * 10.0) / 10.0;
@@ -743,33 +983,36 @@ private:
             std::sort(names.begin(), names.end());
             FILE* f = fopen((subDir + "/SUMMARY.txt").c_str(), "w");
             if (f) {
-                fprintf(f, "RUN %s  budget=%.0fs  wall=%.0fs\n\n", runId_.c_str(),
-                        budget_, now());
-                fprintf(f, "%-16s%6s%11s%7s%7s  method\n", "graph", "k", "totalX",
-                        "sec", "leases");
+                fprintf(f, "RUN %s  budget=%.0fs  wall=%.0fs  seed=%lld  profile=%s\n\n",
+                        runId_.c_str(), budget_, now(), seed_, searchProfile_.c_str());
+                fprintf(f, "%-16s%6s%11s%7s%7s  %-10s profile\n", "graph", "k", "totalX",
+                        "sec", "leases", "method");
                 long long sumK = 0; int worst = -1; bool any = false;
                 for (auto& nm : names) {
                     const auto& s = summary[nm];
                     std::string kS = s["k"].isNull() ? "None" : std::to_string(s["k"].asLL());
                     std::string xS = s["totalX"].isNull() ? "None" : std::to_string(s["totalX"].asLL());
                     if (!s["k"].isNull()) { sumK += s["k"].asLL(); worst = std::max(worst, s["k"].asInt()); any = true; }
-                    fprintf(f, "%-16s%6s%11s%7.0f%7lld  %s\n", nm.c_str(), kS.c_str(),
+                    fprintf(f, "%-16s%6s%11s%7.0f%7lld  %-10s %s\n", nm.c_str(), kS.c_str(),
                             xS.c_str(), s["seconds"].asDouble(), s["leases"].asLL(),
-                            s["method0"].asString().c_str());
+                            s["method0"].asString().c_str(),
+                            s["search_profile"].asString().c_str());
                 }
                 if (any) fprintf(f, "\nworst-k=%d  sum-k=%lld\n", worst, sumK);
                 fclose(f);
             }
         }
+        writeComparison(report, subDir);
         printReport(report);
         return report;
     }
 
     void printReport(const mjson::Value& report) {
         printf("\n%s\n", std::string(74, '=').c_str());
-        printf("CONTEST ORCHESTRATION  run=%s  budget=%.0fs  wall=%.0fs  reserve=%.0fs\n",
+        printf("CONTEST ORCHESTRATION  run=%s  budget=%.0fs  wall=%.0fs  reserve=%.0fs  profile=%s\n",
                report["run_id"].asString().c_str(), report["budget_sec"].asDouble(),
-               report["wall_sec"].asDouble(), report["reserve_sec"].asDouble());
+               report["wall_sec"].asDouble(), report["reserve_sec"].asDouble(),
+               report["search_profile"].asString().c_str());
         printf("%s\n", std::string(74, '-').c_str());
         printf("%-16s%6s%11s%7s%6s%6s%7s  method\n", "graph", "k", "totalX", "sec", "lease", "conv", "valid");
         std::vector<int> ks;
@@ -812,6 +1055,38 @@ int selfTest() {
     check("no graphviz -> sa", coldMethod(500, 1984, true) == "sa");
     check("dense threshold configurable", coldMethod(100, 900, false, 20.0) == "sa-stress");
 
+    printf("search_profile() overlay\n");
+    auto hasPair = [](const std::vector<std::string>& xs,
+                      const std::string& key, const std::string& val) {
+        for (size_t i = 0; i + 1 < xs.size(); i++)
+            if (xs[i] == key && xs[i + 1] == val) return true;
+        return false;
+    };
+    bool allDaniel = true, noOldStack = true;
+    for (const std::string id : {"sa", "sa-warm", "sa-stress", "tripod",
+                                 "tripod-n", "gradx", "staged"}) {
+        const MethodSpec* base = methodById(id);
+        if (!base) { allDaniel = false; continue; }
+        MethodSpec prof = withSearchProfile(*base, "daniel-all");
+        for (const auto& st : prof.stages) if (st.bin == "sakgd") {
+            allDaniel = allDaniel && hasPair(st.extra, "--lex4", "1") &&
+                         hasPair(st.extra, "--ops6", "1") &&
+                         hasPair(st.extra, "--aos", "1");
+            for (const auto& x : st.extra)
+                if (x == "--cands" || x == "--edge-move" ||
+                    x == "--cands-mix" || x == "--bandit" ||
+                    x == "--vm-grid" || x == "--pt") noOldStack = false;
+        }
+    }
+    const MethodSpec* gradx = methodById("gradx");
+    MethodSpec gradxDaniel = withSearchProfile(*gradx, "daniel-all");
+    check("Daniel flags reach every SA layout family", allDaniel);
+    check("old proposal/PT/VM flags removed", noOldStack);
+    check("gradx keeps phase-1 skip", hasPair(gradxDaniel.stages.back().extra, "-p1", "0"));
+    check("current profile is bit-identical",
+          withSearchProfile(*gradx, "current").stages.back().extra ==
+              gradx->stages.back().extra);
+
     printf("quantum_base() bounds\n");
     check("clamped low -> QMIN", quantumBase(100, 9) == QMIN);
     check("mid", std::abs(quantumBase(2700, 9) - 75.0) < 1e-9);
@@ -852,6 +1127,11 @@ struct Args {
     bool noHalf = false;
     double denseDensity = DENSE_DENS;
     std::optional<double> quantum;
+    // Full-9 seed-19 A/B: daniel-all cut sum-k 495 -> 486 and aggregate
+    // totalX 279878 -> 242510. Keep --search-profile current as the explicit
+    // rollback/control path.
+    std::string searchProfile = "daniel-all"; // current | daniel-all
+    std::string baselineRun;                // run id/path for A/B report
     bool selfTest = false;
     int uiPort = 8917;   // live control panel; 0 disables
 };
@@ -876,6 +1156,8 @@ Args parseArgs(int argc, char** argv) {
         else if (s == "--no-half") a.noHalf = true;
         else if (s == "--dense-density") a.denseDensity = std::stod(next());
         else if (s == "--quantum") a.quantum = std::stod(next());
+        else if (s == "--search-profile") a.searchProfile = next();
+        else if (s == "--baseline-run") a.baselineRun = next();
         else if (s == "--ui-port") a.uiPort = std::stoi(next());
         else if (s == "--self-test") a.selfTest = true;
         else throw std::runtime_error("unknown argument: " + s);
@@ -899,6 +1181,11 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (args.selfTest) return selfTest();
+    if (!knownSearchProfile(args.searchProfile)) {
+        fprintf(stderr, "contest_orchestrate: unknown --search-profile %s (use current|daniel-all)\n",
+                args.searchProfile.c_str());
+        return 2;
+    }
 
     ensureBinaries();
     std::string graphsDir;
@@ -924,7 +1211,8 @@ int main(int argc, char** argv) {
 
     ContestOrchestrator orch(graphsDir, args.budget, args.workers, outDir, args.seed,
                              args.xchgRounds, !args.noHalf, args.denseDensity, args.quantum,
-                             args.only, targets, args.uiPort);
+                             args.only, targets, args.uiPort,
+                             args.searchProfile, args.baselineRun);
     orch.run();
     return 0;
 }

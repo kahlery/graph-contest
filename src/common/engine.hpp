@@ -18,6 +18,7 @@
 #include "subprocess.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -296,7 +297,45 @@ struct LogParse {
     std::optional<int> baselineK, baselineTotalX;
     bool baselineOverlap = false;
     std::optional<int> k, totalX;
+    struct OperatorStat {
+        long long trials = 0;
+        long long accepted = 0;
+        long long wins = 0;
+        long long netDK = 0;
+        long long netDX = 0;
+        double qSum = 0.0;
+        long long qSamples = 0;
+
+        void add(const OperatorStat& o) {
+            trials += o.trials;
+            accepted += o.accepted;
+            wins += o.wins;
+            netDK += o.netDK;
+            netDX += o.netDX;
+            qSum += o.qSum;
+            qSamples += o.qSamples;
+        }
+        double meanQ() const { return qSamples ? qSum / qSamples : 0.0; }
+        double acceptRate() const { return trials ? (double)accepted / trials : 0.0; }
+        double successRate() const { return trials ? (double)wins / trials : 0.0; }
+    };
+    std::array<OperatorStat,6> operatorStats{};
 };
+
+using OperatorStat = LogParse::OperatorStat;
+inline constexpr std::array<const char*,6> DANIEL_OP_NAMES =
+    {"fc", "fl", "fr", "rc", "rl", "rr"};
+
+inline int danielOperatorIndex(const std::string& name) {
+    for (int i = 0; i < (int)DANIEL_OP_NAMES.size(); i++)
+        if (name == DANIEL_OP_NAMES[i]) return i;
+    return -1;
+}
+
+inline void addOperatorStats(std::array<OperatorStat,6>& dst,
+                             const std::array<OperatorStat,6>& src) {
+    for (size_t i = 0; i < dst.size(); i++) dst[i].add(src[i]);
+}
 
 inline LogParse parseLog(const std::string& logPath) {
     LogParse out;
@@ -313,6 +352,22 @@ inline LogParse parseLog(const std::string& logPath) {
     if (std::regex_search(text, m, FINAL_RE)) {
         out.k = std::stoi(m[1].str());
         out.totalX = std::stoi(m[2].str());
+    }
+    static const std::regex OPS_RE(
+        R"(\[ops6-stat\]\s+op=(fc|fl|fr|rc|rl|rr)\s+trials=(\d+)\s+accepted=(\d+)\s+wins=(\d+)\s+net_dk=(-?\d+)\s+net_dx=(-?\d+)\s+q=([-+0-9.eE]+))");
+    for (std::sregex_iterator it(text.begin(), text.end(), OPS_RE), end;
+         it != end; ++it) {
+        int idx = danielOperatorIndex((*it)[1].str());
+        if (idx < 0) continue;
+        OperatorStat s;
+        s.trials = std::stoll((*it)[2].str());
+        s.accepted = std::stoll((*it)[3].str());
+        s.wins = std::stoll((*it)[4].str());
+        s.netDK = std::stoll((*it)[5].str());
+        s.netDX = std::stoll((*it)[6].str());
+        s.qSum = std::stod((*it)[7].str());
+        s.qSamples = 1;
+        out.operatorStats[idx].add(s);
     }
     return out;
 }
@@ -460,6 +515,17 @@ inline const std::vector<MethodSpec>& METHODS() {
         {"ils", "ILS", 2, {
             {"approach1", "ils", "", "full", false, "", {}},
         }},
+        // Lexicographic tempered SA (Kohrt, TUM practical 2026), ported in
+        // docs/notes/exp-2026-08-07-lexicographic-tempered.md. The three
+        // pieces only pay off together: --ops6 alone regressed every
+        // instance, --lex4 alone was a wash, the combination cut mean k by
+        // 7.9% / 5.4% / 2.3% on internal-2026 05 / 06 / 08. It REGRESSES the
+        // small and mid-size graphs (03), so this is a per-instance choice,
+        // not a new default — route the large, dense instances here.
+        {"sa-lex", "SA-Lex", 2, {
+            {"sakgd", "", "sa", "rest", true, "",
+             {"--lex4", "1", "--ops6", "1", "--aos", "1"}},
+        }},
     };
     return m;
 }
@@ -467,6 +533,50 @@ inline const std::vector<MethodSpec>& METHODS() {
 inline const MethodSpec* methodById(const std::string& id) {
     for (auto& m : METHODS()) if (m.id == id) return &m;
     return nullptr;
+}
+
+// Search profiles are orthogonal to layout families. A stress/tripod/gradx/
+// staged method still builds exactly the same initial layout; the profile only
+// replaces the final sakgd stage's phase-2 proposal/objective flags. Keeping
+// this as a transformation (instead of duplicating every MethodSpec) also
+// guarantees that warm continuations and future init families receive the
+// same search policy.
+inline bool knownSearchProfile(const std::string& profile) {
+    return profile == "current" || profile == "daniel-all";
+}
+
+inline MethodSpec withSearchProfile(const MethodSpec& base,
+                                    const std::string& profile) {
+    if (!knownSearchProfile(profile))
+        throw std::runtime_error("unknown search profile: " + profile);
+    MethodSpec out = base;
+    if (profile == "current") return out;
+
+    // These flags all consume one following value. Remove the production
+    // proposal stack before installing Daniel's stack so the A/B changes one
+    // coherent policy rather than leaving parsed-but-inert options behind.
+    static const std::set<std::string> REPLACED = {
+        "--cands", "--cands-ramp", "--edge-move", "--cands-mix",
+        "--bandit", "--pair-move", "--slot0", "--grid-anneal",
+        "--vm-grid", "--lex4", "--ops6", "--aos", "--pt"
+    };
+    for (auto& st : out.stages) {
+        if (st.bin != "sakgd") continue;
+        std::vector<std::string> kept;
+        for (size_t i = 0; i < st.extra.size(); i++) {
+            if (REPLACED.count(st.extra[i])) {
+                if (i + 1 < st.extra.size()) i++;
+                continue;
+            }
+            kept.push_back(st.extra[i]);
+        }
+        kept.insert(kept.end(), {
+            "--lex4", "1", "--ops6", "1", "--aos", "1"
+        });
+        st.extra = std::move(kept);
+    }
+    out.label += " + Daniel";
+    return out;
 }
 
 inline std::vector<double> resolveFracs(const MethodSpec& spec, double lnsFrac) {
@@ -613,6 +723,7 @@ struct WorkerResult {
     int returncode = 0;
     double wallClockSec = 0;
     std::optional<int> initialK, initialTotalX, finalK, finalTotalX;
+    std::array<OperatorStat,6> operatorStats{};
     bool valid = false;
 };
 
@@ -631,10 +742,12 @@ struct ComboResult {
 inline ComboResult runCombo(const std::string& method, const std::string& gpath, double totalMin, double p1Frac,
                              long long baseSeed, const std::string& outDir, int nWorkers, int nhSize, int nhCands,
                              double lnsFrac, int ilsPerturb, const std::string& gpathWarm = "",
-                             int xchgRounds = 1, bool halfShare = false, const RunFn& runFn = defaultRun) {
+                             int xchgRounds = 1, bool halfShare = false,
+                             const RunFn& runFn = defaultRun,
+                             const std::string& searchProfile = "current") {
     const MethodSpec* specP = methodById(method);
     if (!specP) throw std::runtime_error("unknown method: " + method);
-    const MethodSpec& registrySpec = *specP;
+    MethodSpec registrySpec = withSearchProfile(*specP, searchProfile);
     // Shared-init methods run stage 0 once here at full machine width; the
     // workers then all warm from its output and split only the remaining
     // budget. (Cold combos only — warm continuations never carry an init.)
@@ -680,6 +793,7 @@ inline ComboResult runCombo(const std::string& method, const std::string& gpath,
         std::string out, glogPath;
         int rc = 0;
         LogParse first, final_;
+        std::array<OperatorStat,6> operatorStats{};
 
         if (xchgRounds <= 1) {
             auto rm = runMethod(spec, inp, totalMin, p1Frac, seed, outDir, suffix,
@@ -687,6 +801,7 @@ inline ComboResult runCombo(const std::string& method, const std::string& gpath,
             out = rm.outPath; rc = rm.rc; glogPath = rm.finalLog;
             first = parseLog(rm.firstLog);
             final_ = parseLog(glogPath);
+            addOperatorStats(operatorStats, final_.operatorStats);
         } else {
             double rmin = totalMin / xchgRounds;
             bool independent = halfShare && wid < nWorkers / 2;
@@ -715,6 +830,7 @@ inline ComboResult runCombo(const std::string& method, const std::string& gpath,
                     rc = rr.first;
                 }
                 final_ = parseLog(glogPath);
+                addOperatorStats(operatorStats, final_.operatorStats);
                 if (barrier) {
                     barrier->wait();
                     if (wid == 0) electElite(outDir, method, nWorkers, r, elite);
@@ -729,6 +845,7 @@ inline ComboResult runCombo(const std::string& method, const std::string& gpath,
         wr.wallClockSec = std::round(wall * 10.0) / 10.0;
         wr.initialK = first.baselineK; wr.initialTotalX = first.baselineTotalX;
         wr.finalK = final_.k; wr.finalTotalX = final_.totalX;
+        wr.operatorStats = operatorStats;
         wr.valid = (rc == 0 && fileExists(out) && final_.k.has_value());
         results[wid] = wr;
     };

@@ -250,6 +250,33 @@ if they aren't.
 | `--status-interval SEC` | `1.0` | Status write interval |
 | `--verify` | — | Report metrics and exit |
 
+### Lexicographic tempered SA (`./bin/sakgd`, all opt-in)
+
+Ported from Daniel Kohrt's TUM practical talk; measured in
+[docs/notes/exp-2026-08-07-lexicographic-tempered.md](docs/notes/exp-2026-08-07-lexicographic-tempered.md).
+The first three only pay off **together** (mean k −7.9% / −5.4% / −2.3% on
+internal-2026 05 / 06 / 08), and they regress the small graphs — hence the
+`sa-lex` method rather than a new default. `--pt` showed no reliable win at a
+3-minute budget.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lex4 0\|1` | `0` | Four-level objective `(k, n_k, Φ=Σcr², total)` with staged acceptance; exact global k and n_k |
+| `--ops6 0\|1` | `0` | Six displacement operators: (focus worst edges \| random vertex) × (centroid \| local \| regional) |
+| `--aos 0\|1` | `0` | Online bandit (probability matching) over those six operators |
+| `--op-local F` | `0.01` | Local move radius, fraction of `sqrt(W·H)` |
+| `--op-regional F` | `0.10` | Regional move radius, fraction of `sqrt(W·H)` |
+| `--aos-alpha F` | `0.001` | Bandit learning rate |
+| `--pt R` | `0` | Tempered SA: R replicas on a temperature ladder, one thread each, periodic exchange |
+| `--pt-rounds N` | `8` | Exchange rounds in phase 2 |
+| `--pt-lo F` / `--pt-hi F` | `0.25` / `4` | Ladder ends, as multiples of `--p2-t0` |
+| `--lex-check 0\|1` | `0` | Debug: verify each committed `--lex4` move's predicted `(k, n_k)` against the truth |
+
+```bash
+# the measured-best combination (method id: sa-lex)
+./bin/sakgd -i graph.json -o out.json -t 3 -p1 0.6 --lex4 1 --ops6 1 --aos 1
+```
+
 ### `./bin/approach1`-only flags
 
 | Flag | Default | Description |
@@ -372,7 +399,23 @@ for the final per-graph verify + submission copy.
 #   -> data/output/internal-contest/submission/<run_id>/<graph>.json   (one best VALID layout per graph)
 #      data/output/internal-contest/bests.json                          (best-k metadata)
 ./bin/contest_orchestrate --self-test         # pure-logic checks, no solver
+
+# Full-contest Daniel-profile A/B against a stored one-hour baseline.
+# Every graph starts cold; warm layouts exist only inside this run's leases.
+caffeinate -dims ./bin/contest_orchestrate \
+  --input-set internal-2026 --budget 3600 --workers 8 --seed 19 \
+  --search-profile daniel-all --baseline-run corch_1784476912
 ```
+
+`--search-profile daniel-all` is the default after the full-hour seed-19 A/B
+improved sum-k `495 → 486`; pass `--search-profile current` for the frozen
+control. `daniel-all` leaves each graph's
+stress/tripod/gradx/staged initialisation and the scheduler unchanged, but
+replaces every subsequent SA phase-2 search (including warm continuations)
+with `--lex4 1 --ops6 1 --aos 1`. The run report records seed, profile, source
+revision, and aggregated operator statistics. When `--baseline-run` is set,
+`comparison.json`/`comparison.md` are written next to `orchestration.json` and
+copied into the per-run submission folder.
 
 Validated: on a 420 s budget it finishes in 381 s with a valid layout for all 9
 graphs (see [data/output/exp-2026-06-30-reheat-sharing.md](data/output/exp-2026-06-30-reheat-sharing.md)).

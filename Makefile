@@ -69,8 +69,9 @@ all: $(BIN) $(BIN1) tools
 $(BINDIR):
 	mkdir -p $(BINDIR)
 
+# --pt runs its replicas on std::threads, so sakgd links the thread lib.
 $(BIN): $(SRC) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS) $(THREADLIBS)
 
 $(BIN1): $(SRC1) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)

@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -40,6 +41,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -589,6 +591,36 @@ struct MovePlan {
     ll   dCross     = 0;
 };
 
+// The four ordered levels of the lexicographic objective, as deltas of a
+// planned move (see SAkGD::evalLex). Compared in the order k, n_k, Phi,
+// total: k is the contest objective, n_k is how many edges are pinned at
+// that worst level (k cannot drop until n_k reaches 0), Phi = sum cr(e)^2
+// supplies a smooth gradient where k and n_k are both flat, and total is
+// the final tiebreak.
+struct LexDelta {
+    int    dK    = 0;    // exact change of the global bottleneck k
+    int    dNk   = 0;    // change in #edges sitting at the (new) worst level
+    double dPhi  = 0.0;  // change of sum crossings(e)^2
+    ll     dTot  = 0;    // change of the total crossing count
+    int    newK  = 0;    // resulting global k (for the Phi unit)
+
+    // Strict lexicographic "is better than", used to rank the best-of-C
+    // candidates. NOTE: this keeps all four levels strictly separated,
+    // whereas acceptLex scalarises levels 2-3 into dE = dNk*u + dPhi once
+    // dNk >= 0. Both readings come from the spec (the objective is stated as
+    // four ordered levels; the acceptance rule is stated with that scalar),
+    // but they are not the same order: a candidate that trades +1 n_k for a
+    // large Phi drop ranks worse here and could still be accepted there.
+    // Only the best-of-C path uses this, and --ops6 forces C = 1, so the two
+    // never disagree in the ops6 configurations.
+    bool better(const LexDelta& o) const {
+        if (dK   != o.dK)   return dK   < o.dK;
+        if (dNk  != o.dNk)  return dNk  < o.dNk;
+        if (dPhi != o.dPhi) return dPhi < o.dPhi;
+        return dTot < o.dTot;
+    }
+};
+
 class SAkGD {
 public:
     int n = 0, m = 0;
@@ -636,6 +668,14 @@ public:
     void moveLogOpen() {
         if (!moveLogFile.empty() && !moveLog)
             moveLog = fopen(moveLogFile.c_str(), "w");
+    }
+    // Phi = sum crossings(e)^2, the smooth potential of the lexicographic
+    // objective. Only needed once per exchange round, so it is recomputed
+    // rather than maintained incrementally.
+    double phi() const {
+        double s = 0.0;
+        for (int e = 0; e < m; e++) s += (double)xc[e] * (double)xc[e];
+        return s;
     }
     void recomputeCenter() {
         double sx = 0, sy = 0;
@@ -796,6 +836,70 @@ public:
                                      // showed it disrupts the cooled SA walk
     int            selKBand = -1;    // active band: <0 => phase-1 weighting
     int            lastCumK = -1;    // kVal at last rebuild (critical-mode resync)
+
+    // ================================================================
+    // Lexicographic tempered SA (Kohrt, TUM practical 2026)
+    // ================================================================
+    // Three opt-in pieces, all off by default so the production default
+    // stays bit-identical unless the flags are given:
+    //   --lex4  full four-level lexicographic objective + staged acceptance
+    //   --ops6  six-operator displacement set (focus/random x c/l/r)
+    //   --aos   online bandit over those six operators
+    //
+    // --lex4 replaces the scalarised phase-2 fitness (localK proxy, then a
+    // weighted tie-break) with the exact four-level comparison
+    //     (k, n_k, Phi = sum crossings(e)^2, totalX)
+    // and the staged acceptance rule: k is annealed on its own scale, and
+    // only on a k-plateau does the walk fall through to n_k / Phi / total.
+    // Unlike the old lexK path this reads the GLOBAL k and n_k exactly (via
+    // cntPerK), not the local max over the touched edges.
+    bool           lex4     = false;
+    // Debug: verify every committed lex4 move against the true post-commit
+    // (k, n_k). evalLex predicts them from the histogram before the move; if
+    // that prediction ever drifted from what commitMove actually produces,
+    // the whole objective would be silently wrong. Off in production (one
+    // extra comparison per accepted move).
+    bool           lexCheck = false;
+    long long      lexChecked = 0, lexBad = 0;
+    // Six-operator displacement set: node selection (focus worst edges /
+    // random vertex) x movement (centroid / local / regional). Operator id
+    // = nodeSel*3 + movement, giving the slide order fc, fl, fr, rc, rl, rr.
+    bool           ops6     = false;
+    // Move radii as a fraction of the layout scale sqrt(W*H). "local" is a
+    // tight jitter around the current position, "regional" a wide one; the
+    // centroid operator jumps onto the neighbour centroid with local/2 jitter.
+    double         opLocalFrac    = 0.01;
+    double         opRegionalFrac = 0.10;
+    // Adaptive operator selection: each operator carries a value q, an
+    // exponential recency-weighted average of its success indicator, and is
+    // sampled by probability matching
+    //     p_i = pmin + (1 - 6*pmin) * q_i / sum_j q_j
+    // so pmin*6 of the mass stays uniform (a starved operator keeps a share
+    // and can recover) and the rest is split in proportion to merit.
+    //
+    // An additive floor would not work here: success rates are ~0.5-3%, so a
+    // fixed 0.05 floor swamps every q and degrades selection to uniform
+    // exactly where the operators differ most. alpha is correspondingly slow
+    // (~1/1000): at a 1% success rate a fast average is pure noise.
+    bool           aos       = false;
+    double         aosAlpha  = 0.001;
+    double         aosFloor  = 0.05;
+    double         opQ[6]    = {0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
+    long long      opUse[6]  = {0, 0, 0, 0, 0, 0};
+    long long      opAccept[6] = {0, 0, 0, 0, 0, 0};
+    long long      opWin[6]  = {0, 0, 0, 0, 0, 0};
+    long long      opNetDK[6] = {0, 0, 0, 0, 0, 0};
+    long long      opNetDX[6] = {0, 0, 0, 0, 0, 0};
+    static constexpr const char* kOpName[6] =
+        {"fc", "fl", "fr", "rc", "rl", "rr"};
+
+    // Focus selection needs a random edge from the top-3 occupied crossing
+    // levels. Maintaining a per-level edge index would cost a write on every
+    // count change, so the list is cached and rebuilt lazily — exactly the
+    // staleness policy rebuildCum() already uses for the vertex weights.
+    vector<int>    hotEdges;
+    int            hotK      = -1;
+    int            hotStale  = 0;
 
     SAkGD() {
         rng.seed((uint64_t)chrono::steady_clock::now().time_since_epoch().count() ^
@@ -1405,6 +1509,8 @@ public:
         buildVertexGrid();        // resync vertex grid for the fast overlap check
         computeAllCrossings();
         rebuildCum();
+        hotEdges.clear();         // stale: every edge's level may have moved
+        hotK = -1;
         recomputeCenter();        // wholesale position change: resync exactly
     }
 
@@ -1768,6 +1874,7 @@ public:
         }
         totalX     += plan.dCross;
         cumStaleCnt += (int)plan.edgeCounts.size();
+        hotStale    += (int)plan.edgeCounts.size();
     }
 
     // ----- acceptance rule -------------------------------------------
@@ -1789,6 +1896,175 @@ public:
         if (dE <= 0.0) return true;         // Metropolis (default)
         double prob = exp(-dE / max(1e-9, currentTemp));
         return uniform_real_distribution<double>(0.0, 1.0)(rng) < prob;
+    }
+
+    // ----- lexicographic objective (--lex4) --------------------------
+    // Exact deltas of (k, n_k, Phi, total) for a planned move. k and n_k are
+    // read off cntPerK, so they are the GLOBAL bottleneck values, not the
+    // local max over the touched edges that the scalar fitness uses.
+    //
+    // Only edges in plan.edgeCounts change level, so the whole histogram
+    // update is a handful of +-1s on a small level->delta map. The downward
+    // rescan below runs only while the levels above are empty, i.e. only on
+    // the rare (and valuable) move that actually drops k.
+    void evalLex(const MovePlan& plan, LexDelta& d) const {
+        static thread_local unordered_map<int,int> lvlDelta;
+        lvlDelta.clear();
+        lvlDelta.reserve(plan.edgeCounts.size() * 2 + 4);
+
+        double dPhi   = 0.0;
+        int    hiNew  = 0;
+        for (const auto& ec : plan.edgeCounts) {
+            int oldC = std::get<1>(ec);
+            int newC = std::get<2>(ec);
+            lvlDelta[oldC]--;
+            lvlDelta[newC]++;
+            dPhi += (double)newC * newC - (double)oldC * oldC;
+            if (newC > hiNew) hiNew = newC;
+        }
+
+        auto levelCount = [&](int lv) -> int {
+            int base = (lv >= 0 && lv < (int)cntPerK.size()) ? cntPerK[lv] : 0;
+            auto it = lvlDelta.find(lv);
+            return base + (it == lvlDelta.end() ? 0 : it->second);
+        };
+
+        int newK;
+        if (hiNew > kVal) {
+            // Some edge was pushed above the current bottleneck; nothing can
+            // sit higher than the highest new count, so this IS the new k.
+            newK = hiNew;
+        } else {
+            newK = kVal;
+            while (newK > 0 && levelCount(newK) == 0) newK--;
+        }
+
+        d.newK = newK;
+        d.dK   = newK - kVal;
+        d.dNk  = levelCount(newK) - ((newK >= 0 && newK < (int)cntPerK.size())
+                                         ? cntPerK[newK] : 0);
+        // When k moves, "edges tied at the worst level" is a different set
+        // before and after, so its delta carries no meaning — the k level
+        // decides on its own and dNk is only consulted on a plateau.
+        if (d.dK != 0) d.dNk = 0;
+        d.dPhi = dPhi;
+        d.dTot = plan.dCross;
+    }
+
+    // Staged acceptance over the four levels. k is annealed on its own
+    // scale; on a k-plateau the walk falls through to n_k, then to the
+    // Phi-scalarised (n_k, Phi) energy, then to total as a pure tiebreak.
+    //
+    //   u = Phi-cost of shedding one crossing from a worst-level edge
+    //     = k^2 - (k-1)^2 = 2k - 1
+    // pricing one worst-level edge in the same currency as Phi, and giving
+    // the plateau temperature the scale T*u so one T means the same thing
+    // on both branches.
+    bool acceptLex(const LexDelta& d, double currentTemp) {
+        auto roll = [&](double p) {
+            return uniform_real_distribution<double>(0.0, 1.0)(rng) < p;
+        };
+        if (d.dK < 0) return true;                       // k dropped
+        if (d.dK > 0)                                    // k rose
+            return roll(exp(-(double)d.dK / max(1e-9, currentTemp)));
+
+        if (d.dNk < 0) return true;                      // fewer worst edges
+
+        double u  = max(1.0, 2.0 * (double)kVal - 1.0);
+        double dE = (double)d.dNk * u + d.dPhi;
+        if (dE < 0.0) return true;
+        if (dE == 0.0) return d.dTot <= 0;               // tiebreak on total
+        return roll(exp(-dE / max(1e-9, currentTemp * u)));
+    }
+
+    // Did this move strictly improve the lexicographic state? Used as the
+    // bandit's success signal (see aosReward).
+    static bool lexImproved(const LexDelta& d, int kNow) {
+        if (d.dK  < 0) return true;
+        if (d.dK  > 0) return false;
+        if (d.dNk < 0) return true;
+        double u = max(1.0, 2.0 * (double)kNow - 1.0);
+        return (double)d.dNk * u + d.dPhi < 0.0;
+    }
+
+    // ----- six-operator displacement set (--ops6) --------------------
+    // Rebuild the "hot edge" pool: every edge whose crossing count sits in
+    // one of the top-3 occupied levels. Lazy, like rebuildCum().
+    void rebuildHotEdges() {
+        hotEdges.clear();
+        int lv[3], nl = 0;
+        for (int L = kVal; L >= 1 && nl < 3; --L)
+            if (L < (int)cntPerK.size() && cntPerK[L] > 0) lv[nl++] = L;
+        if (nl > 0) {
+            int lo = lv[nl - 1];
+            for (int e = 0; e < m; e++) if (xc[e] >= lo) hotEdges.push_back(e);
+        }
+        hotK     = kVal;
+        hotStale = 0;
+    }
+
+    // Focus selection: a random endpoint of a random edge among the top-3
+    // crossing levels. Falls back to the weighted selector when no edge
+    // carries a crossing at all (k == 0).
+    int selectFocusNode() {
+        if (hotEdges.empty() || kVal != hotK || hotStale > max(64, m / 4))
+            rebuildHotEdges();
+        if (hotEdges.empty()) return selectNode();
+        int e = hotEdges[uniform_int_distribution<size_t>(
+            0, hotEdges.size() - 1)(rng)];
+        return (rng() & 1) ? edges[e].u : edges[e].v;
+    }
+
+    int selectRandomNode() {
+        return uniform_int_distribution<int>(0, n - 1)(rng);
+    }
+
+    // Movement kinds: 0 = centroid (jump onto the neighbour centroid),
+    // 1 = local (tight jitter), 2 = regional (wide jitter).
+    Pt proposeOp(int v, int movement) {
+        double scale = sqrt((double)max<ll>(1, W) * (double)max<ll>(1, H));
+        double sLoc  = max(1.0, scale * opLocalFrac);
+        double sReg  = max(1.0, scale * opRegionalFrac);
+        if (movement == 0) {
+            const auto& inc = nodeEdges[v];
+            if (!inc.empty()) {
+                double cx, cy;
+                nbCentroid(v, cx, cy);
+                return jitterClamp(cx, cy, sLoc * 0.5);
+            }
+            return jitterClamp((double)pos[v].x, (double)pos[v].y, sLoc);
+        }
+        double sig = (movement == 1) ? sLoc : sReg;
+        return jitterClamp((double)pos[v].x, (double)pos[v].y, sig);
+    }
+
+    // ----- adaptive operator selection (--aos) -----------------------
+    int aosSelect() {
+        if (!aos) return (int)(rng() % 6);
+        double qs = 0.0;
+        for (int i = 0; i < 6; i++) qs += max(0.0, opQ[i]);
+        if (qs <= 1e-12) return (int)(rng() % 6);
+        double pmin  = min(1.0 / 6.0, max(0.0, aosFloor));
+        double share = 1.0 - 6.0 * pmin;
+        double r = uniform_real_distribution<double>(0.0, 1.0)(rng);
+        for (int i = 0; i < 5; i++) {
+            r -= pmin + share * (max(0.0, opQ[i]) / qs);
+            if (r < 0) return i;
+        }
+        return 5;
+    }
+
+    void aosReward(int op, bool accepted, bool success, int dK, ll dX) {
+        if (op < 0 || op > 5) return;
+        opUse[op]++;
+        if (accepted) {
+            opAccept[op]++;
+            opNetDK[op] += dK;
+            opNetDX[op] += dX;
+        }
+        if (success) opWin[op]++;
+        if (!aos) return;
+        opQ[op] = (1.0 - aosAlpha) * opQ[op] + aosAlpha * (success ? 1.0 : 0.0);
     }
 
     // ----- coupled two-vertex swap move ------------------------------
@@ -2328,6 +2604,11 @@ public:
         planBest.pairChanges.reserve(256);
         planBest.edgeCounts .reserve(256);
 
+        // Kohrt-style pieces are phase-2 only: phase 1 minimises the total
+        // crossing count, where a k-lexicographic objective has nothing to say.
+        const bool useLex4 = (lex4 && phase == 2);
+        const bool useOps6 = (ops6 && phase == 2);
+
         // Phase fitness of a planned move (shared by the single-proposal path
         // and the best-of-C benefit analysis below).
         auto fitOf = [&](const MovePlan& pl) -> double {
@@ -2405,7 +2686,17 @@ public:
             double currentTemp = startingTemp;
             while (kVal > 0 && !gStopRequested && currentTemp > tLim &&
                    elapsed() < timeLimitSec) {
-                int v = selectNode();
+                // Operator selection (--ops6): pick the displacement operator
+                // first, since it also decides how the vertex is chosen —
+                // ops 0-2 focus the worst edges, ops 3-5 draw uniformly.
+                int op = -1;
+                int v;
+                if (useOps6) {
+                    op = aosSelect();
+                    v  = (op < 3) ? selectFocusNode() : selectRandomNode();
+                } else {
+                    v = selectNode();
+                }
 
                 if (gridAnneal) {
                     int shift = (int)(gaLevels *
@@ -2417,7 +2708,14 @@ public:
                 // Coupled edge translation: selectNode is already biased to
                 // bottleneck vertices; ride that bias and shift v's hottest
                 // incident edge as a rigid segment.
-                if (phase == 2 && edgeMoveP > 0 && !nodeEdges[v].empty() &&
+                //
+                // Disabled under --ops6: this branch would hijack the move
+                // after an operator has already been drawn, so the operator
+                // would never reach aosReward and the bandit would learn from
+                // a biased sample. It also routes through acceptByRule, which
+                // --lex4 does not govern.
+                if (phase == 2 && !useOps6 &&
+                    edgeMoveP > 0 && !nodeEdges[v].empty() &&
                     (int)(rng() % 100) < edgeMoveP) {
                     int eHot = nodeEdges[v][0];
                     for (int e : nodeEdges[v])
@@ -2445,14 +2743,21 @@ public:
                     if      (fr < 0.30) C = 1;
                     else if (fr < 0.60) C = (C + 1) / 2;
                 }
+                // One proposal per move under --ops6: the operator IS the
+                // hypothesis, and a best-of-C over mixed operators would hide
+                // which one actually earned the accept from the bandit.
+                if (useOps6) C = 1;
 
                 MovePlan* act = nullptr;   // the plan fed to the accept rule
                 double dE = 0.0;
+                LexDelta ld, ldBest;       // --lex4: four-level move deltas
                 int actSlot = -1;          // instrumentation: winning proposal slot
 
                 if (C <= 1) {
-                    Pt newPos = gridSnap(selectPlace(v, currentTemp, initT,
-                                                     phase == 2));
+                    Pt newPos = useOps6
+                        ? proposeOp(v, op % 3)
+                        : gridSnap(selectPlace(v, currentTemp, initT,
+                                               phase == 2));
                     if (newPos == pos[v]) { currentTemp *= decT; continue; }
                     // Forbid two distinct nodes sharing the same point.
                     {
@@ -2473,7 +2778,8 @@ public:
                         currentTemp *= decT; continue;
                     }
                     planMove(v, newPos, plan);
-                    dE  = fitOf(plan);
+                    if (useLex4) evalLex(plan, ldBest);
+                    else         dE = fitOf(plan);
                     act = &plan;
                 } else {
                     // Benefit analysis: plan C candidate positions exactly and
@@ -2493,9 +2799,18 @@ public:
                         auto it = occupied.find(p);
                         if (it != occupied.end() && it->second != v) continue;
                         planMove(v, p, plan);
-                        double e = fitOf(plan);
-                        if (!found || e < dE) {
-                            found = true; dE = e;
+                        bool win;
+                        if (useLex4) {
+                            evalLex(plan, ld);
+                            win = !found || ld.better(ldBest);
+                        } else {
+                            double e = fitOf(plan);
+                            win = !found || e < dE;
+                            if (win) dE = e;
+                        }
+                        if (win) {
+                            found = true;
+                            if (useLex4) ldBest = ld;
                             actSlot = (candsMix && phase == 2) ? slotC : -1;
                             std::swap(plan, planBest);
                         }
@@ -2507,7 +2822,23 @@ public:
                     act = &planBest;
                 }
 
-                bool acc = acceptByRule(dE, currentTemp);
+                bool acc = useLex4 ? acceptLex(ldBest, currentTemp)
+                                   : acceptByRule(dE, currentTemp);
+
+                // Bandit credit: reward an operator only when the move both
+                // survived acceptance and strictly improved the objective —
+                // a worsening move accepted by the Metropolis roll is the
+                // temperature's doing, not the operator's.
+                if (useOps6) {
+                    bool win = acc && (useLex4
+                        ? lexImproved(ldBest, kVal)
+                        : (act->newLocalK < act->oldLocalK ||
+                           (act->newLocalK == act->oldLocalK && dE < 0.0)));
+                    int observedDK = useLex4
+                        ? ldBest.dK
+                        : (act->newLocalK - act->oldLocalK);
+                    aosReward(op, acc, win, observedDK, act->dCross);
+                }
 
                 if (phase == 2 && moveLog)
                     moveLogRecord(v, actSlot, acc,
@@ -2518,7 +2849,22 @@ public:
                     if (bandit && actSlot >= 0 &&
                         act->newLocalK < act->oldLocalK)
                         slotCredit[actSlot & 3] += 1.0;
+                    int predK  = ldBest.newK;
+                    int predNk = (useLex4 && kVal < (int)cntPerK.size())
+                                 ? cntPerK[kVal] + ldBest.dNk : 0;
                     commitMove(*act);
+                    if (useLex4 && lexCheck) {
+                        lexChecked++;
+                        int trueNk = (kVal < (int)cntPerK.size()) ? cntPerK[kVal] : 0;
+                        if (predK != kVal || (ldBest.dK == 0 && predNk != trueNk)) {
+                            lexBad++;
+                            if (lexBad <= 5)
+                                cerr << "  [lex-check] MISMATCH predK=" << predK
+                                     << " k=" << kVal << " predNk=" << predNk
+                                     << " nk=" << trueNk << " dK=" << ldBest.dK
+                                     << "\n";
+                        }
+                    }
                     accepts++;
                     if (kVal < bestK ||
                         (kVal == bestK && totalX < bestX)) {
@@ -2603,6 +2949,36 @@ public:
         cerr << "[phase " << phase << "] end    moves=" << moves
              << " accepts=" << accepts
              << "  bestK=" << bestK << " bestX=" << bestX << "\n";
+
+        if (useLex4 && lexCheck)
+            cerr << "  [lex-check] verified=" << lexChecked
+                 << " mismatches=" << lexBad << "\n";
+
+        // Operator win-rate table (slide 20's per-graph heat map, per run).
+        if (useOps6) {
+            cerr << "  [ops6] ";
+            for (int i = 0; i < 6; i++) {
+                double wr = opUse[i] ? (double)opWin[i] / (double)opUse[i] : 0.0;
+                cerr << kOpName[i] << "=" << opUse[i] << "/"
+                     << (int)(wr * 1000) / 10.0 << "%";
+                if (aos) cerr << "(q=" << (int)(opQ[i] * 1000) / 1000.0 << ")";
+                cerr << "  ";
+            }
+            cerr << "\n";
+            // Machine-readable companion to the heat-map line. The contest
+            // orchestrator aggregates these records across every worker and
+            // lease, preserving the exact counts (the human percentage above
+            // is intentionally rounded). net_dk/net_dx are signed deltas over
+            // accepted moves; negative values mean a net reduction.
+            for (int i = 0; i < 6; i++)
+                cerr << "  [ops6-stat] op=" << kOpName[i]
+                     << " trials=" << opUse[i]
+                     << " accepted=" << opAccept[i]
+                     << " wins=" << opWin[i]
+                     << " net_dk=" << opNetDK[i]
+                     << " net_dx=" << opNetDX[i]
+                     << " q=" << opQ[i] << "\n";
+        }
     }
 };
 
@@ -2624,7 +3000,19 @@ static void printUsage(const char* prog) {
         "  -s  RNG seed                             (default: time-based)\n"
         "  --kband N  phase-2 k-critical selection band, -1 to disable (default: 2)\n"
         "  --lexk 0|1 phase-2 lexicographic fitness (k, #edges at k, totalX)\n"
-        "             (default: 0 — hurts dense graphs)\n"
+        "             (default: 0 - hurts dense graphs)\n"
+        "  --lex4 0|1 phase-2 four-level lexicographic objective + staged\n"
+        "             acceptance: (k, n_k, Phi=sum cr^2, totalX)\n"
+        "  --ops6 0|1 phase-2 six-operator displacement set\n"
+        "             (focus|random vertex) x (centroid|local|regional)\n"
+        "  --aos  0|1 adaptive (bandit) selection over the six operators\n"
+        "  --op-local F     local move radius, fraction of sqrt(W*H) [0.01]\n"
+        "  --op-regional F  regional move radius, fraction of sqrt(W*H) [0.10]\n"
+        "  --aos-alpha F    bandit learning rate [0.001]\n"
+        "  --pt R     tempered SA: R replicas on a temperature ladder, run on\n"
+        "             R threads with periodic exchange (0/1 = off)\n"
+        "  --pt-rounds N  exchange rounds in phase 2 [8]\n"
+        "  --pt-lo F / --pt-hi F  ladder ends as multiples of --p2-t0 [0.25/4]\n"
         "  --krepair 0|1 deterministic vertex-move polish of bottleneck edges\n"
         "  --vm-grid 0|1 level-clear sweep adds a coarse canvas grid + fine\n"
         "             refinement per vertex (VM-style whole-drawing argmin)\n"
@@ -2681,6 +3069,17 @@ int main(int argc, char** argv) {
     int    banditArg   = 0;   // 1 = credit-weighted cands-mix slot sampling
     string acceptArg = "metropolis"; // metropolis | threshold | lahc
     int    swapArg   = 0;     // 1 = enable coupled swap move on occupied hits
+    int    lex4Arg   = 0;     // 1 = four-level lexicographic objective (k, n_k, Phi, total)
+    int    lexCheckArg = 0;   // 1 = verify predicted (k, n_k) against post-commit truth
+    int    ops6Arg   = 0;     // 1 = six-operator displacement set (fc/fl/fr/rc/rl/rr)
+    int    aosArg    = 0;     // 1 = adaptive (bandit) operator selection
+    double opLocArg  = 0.01;  // local move radius, fraction of sqrt(W*H)
+    double opRegArg  = 0.10;  // regional move radius, fraction of sqrt(W*H)
+    double aosAlphaArg = 0.001; // bandit learning rate
+    int    ptR       = 0;     // tempered SA: replica count (0/1 = off)
+    int    ptRounds  = 8;     // exchange rounds in phase 2
+    double ptLo      = 0.25;  // coldest replica: p2T0 * ptLo
+    double ptHi      = 4.0;   // hottest replica: p2T0 * ptHi
 
     for (int i = 1; i < argc; i++) {
         string a = argv[i];
@@ -2718,6 +3117,17 @@ int main(int argc, char** argv) {
         else if (a == "--bandit")            banditArg     = atoi(need("--bandit"));
         else if (a == "--accept")            acceptArg  = need("--accept");
         else if (a == "--swap")              swapArg    = atoi(need("--swap"));
+        else if (a == "--lex4")              lex4Arg    = atoi(need("--lex4"));
+        else if (a == "--lex-check")         lexCheckArg = atoi(need("--lex-check"));
+        else if (a == "--ops6")              ops6Arg    = atoi(need("--ops6"));
+        else if (a == "--aos")               aosArg     = atoi(need("--aos"));
+        else if (a == "--op-local")          opLocArg   = atof(need("--op-local"));
+        else if (a == "--op-regional")       opRegArg   = atof(need("--op-regional"));
+        else if (a == "--aos-alpha")         aosAlphaArg = atof(need("--aos-alpha"));
+        else if (a == "--pt")                ptR        = atoi(need("--pt"));
+        else if (a == "--pt-rounds")         ptRounds   = atoi(need("--pt-rounds"));
+        else if (a == "--pt-lo")             ptLo       = atof(need("--pt-lo"));
+        else if (a == "--pt-hi")             ptHi       = atof(need("--pt-hi"));
         else if (a == "--status-file")       statusFile = need("--status-file");
         else if (a == "--status-id")         statusId   = need("--status-id");
         else if (a == "--status-interval")   statusInterval = atof(need("--status-interval"));
@@ -2730,6 +3140,18 @@ int main(int argc, char** argv) {
     }
     if (inputFile.empty()) { printUsage(argv[0]); return 1; }
     if (outputFile.empty() && !verifyOnly) outputFile = inputFile + ".out.json";
+
+    // Flag interactions that would otherwise fail silently.
+    if (lex4Arg && acceptArg != "metropolis")
+        cerr << "WARNING: --lex4 supplies its own staged acceptance rule; "
+                "--accept " << acceptArg << " is ignored on the phase-2 "
+                "single-vertex path.\n";
+    if (ops6Arg && gridAnnealArg)
+        cerr << "WARNING: --ops6 proposals are not grid-snapped; "
+                "--grid-anneal has no effect under --ops6.\n";
+    if (ops6Arg && edgeMoveArg)
+        cerr << "WARNING: --edge-move is disabled under --ops6 (it would "
+                "bypass operator selection and starve the bandit).\n";
 
     cerr << "Reading: " << inputFile << "\n";
     GraphData g = readGraph(inputFile);
@@ -2764,11 +3186,161 @@ int main(int argc, char** argv) {
     solver.acceptMode     = (acceptArg == "threshold") ? 1
                           : (acceptArg == "lahc")      ? 2 : 0;
     solver.swapMove       = (swapArg != 0);
+    solver.lex4           = (lex4Arg != 0);
+    solver.lexCheck       = (lexCheckArg != 0);
+    solver.ops6           = (ops6Arg != 0);
+    solver.aos            = (aosArg  != 0);
+    solver.opLocalFrac    = max(1e-5, opLocArg);
+    solver.opRegionalFrac = max(1e-5, opRegArg);
+    solver.aosAlpha       = min(1.0, max(1e-4, aosAlphaArg));
     solver.fitSq          = (fitArg == "sq");
     solver.fitSq2         = (fitArg == "sq2");
     solver.initMode       = initMode;
     solver.runStartedAt   = steady_clock::now();
     if (!traceFile.empty()) ofstream(traceFile, std::ios::trunc);  // start clean
+
+    // ================================================================
+    // Tempered SA: R replicas on a geometric temperature ladder
+    // ================================================================
+    // Hot replicas explore, cold ones refine, and configurations migrate
+    // between ladder levels between rounds. Each replica owns a complete,
+    // independent solver (all SAkGD state is per-instance and planMove's
+    // scratch is thread_local), so the round runs on R threads with no
+    // shared mutable state; the exchange happens single-threaded at the
+    // barrier.
+    //
+    // Replicas are seeded differently and each runs its own phase 1, so the
+    // ladder starts from R structurally different layouts rather than R
+    // walks off one init.
+    //
+    // Exchange: temperatures are swapped between ladder-adjacent replicas
+    // (equivalent to, but far cheaper than, swapping the configurations)
+    // under the usual criterion p = min(1, exp((beta_i - beta_j)(E_i - E_j)))
+    // with E = Phi per edge, normalised by the worst-level crossing cost so
+    // the exponent stays on a meaningful scale. On top of that the cold half
+    // adopts the elite layout when it is strictly behind — the project's
+    // established half-share rule: intensify cold, keep the hot half free to
+    // explore.
+    if (ptR > 1) {
+        double p1Sec  = phase1Min * 60.0;
+        double p2Sec  = max(0.0, (totalMin - phase1Min) * 60.0);
+        int    rounds = max(1, ptRounds);
+        double roundSec = p2Sec / rounds;
+
+        vector<unique_ptr<SAkGD>> rep;
+        vector<double> ladderT(ptR);      // ladderT[i] = temperature of replica i
+        for (int i = 0; i < ptR; i++) {
+            // Geometric ladder from p2T0*ptLo (cold) to p2T0*ptHi (hot).
+            double f = (ptR == 1) ? 0.0 : (double)i / (double)(ptR - 1);
+            ladderT[i] = p2T0 * ptLo * pow(ptHi / ptLo, f);
+            auto s = make_unique<SAkGD>(solver);   // copy config, pre-setup
+            s->rng.seed((uint64_t)((seed >= 0 ? seed : 12345) + 7919LL * i));
+            if (i > 0) { s->statusFile.clear(); s->traceFile.clear(); }
+            s->moveLogFile.clear();
+            s->runStartedAt = steady_clock::now();
+            rep.push_back(std::move(s));
+        }
+        cerr << "[pt] " << ptR << " replicas, " << rounds << " rounds, ladder";
+        for (int i = 0; i < ptR; i++) cerr << " " << ladderT[i];
+        cerr << "\n";
+
+        auto parallelFor = [&](const std::function<void(int)>& body) {
+            vector<std::thread> th;
+            for (int i = 0; i < ptR; i++) th.emplace_back(body, i);
+            for (auto& t : th) t.join();
+        };
+
+        parallelFor([&](int i) { rep[i]->setup(g); });
+        if (p1Sec > 0)
+            parallelFor([&](int i) {
+                rep[i]->runSA(1, p1T0, 0.999, 0.99, 0.01, p1Sec);
+            });
+
+        for (int r = 0; r < rounds && !gStopRequested; r++) {
+            parallelFor([&](int i) {
+                rep[i]->restoreBest();     // every round continues from the incumbent
+                rep[i]->runSA(2, ladderT[i], p2DecT, 0.99, 0.01, roundSec);
+            });
+
+            // ---- exchange ------------------------------------------
+            int elite = 0;
+            for (int i = 1; i < ptR; i++)
+                if (rep[i]->bestK < rep[elite]->bestK ||
+                    (rep[i]->bestK == rep[elite]->bestK &&
+                     rep[i]->bestX < rep[elite]->bestX))
+                    elite = i;
+            if (r + 1 >= rounds) break;    // no point exchanging after the last round
+
+            // Energy is raw Phi, and the inverse temperature is 1/(T*u) —
+            // exactly the scale acceptLex anneals Phi on, so the exchange
+            // criterion speaks the same units as the walk it is exchanging
+            // between. (Normalising Phi per edge instead makes the exponent
+            // ~0.1 and the exchange degenerates into a coin flip; leaving u
+            // out makes it astronomically large. This is the consistent one.)
+            vector<double> E(ptR);
+            double u = max(1.0, 2.0 * (double)rep[elite]->bestK - 1.0);
+            for (int i = 0; i < ptR; i++) {
+                rep[i]->restoreBest();
+                E[i] = rep[i]->phi();
+            }
+            // Adjacent swaps along the ladder, coldest first.
+            vector<int> order(ptR);
+            for (int i = 0; i < ptR; i++) order[i] = i;
+            sort(order.begin(), order.end(),
+                 [&](int a, int b) { return ladderT[a] < ladderT[b]; });
+            int swaps = 0;
+            for (int p = 0; p + 1 < ptR; p++) {
+                int a = order[p], b = order[p + 1];     // a colder than b
+                double dBeta = (1.0 / ladderT[a] - 1.0 / ladderT[b]) / u;
+                double arg   = dBeta * (E[a] - E[b]);
+                double pAcc  = (arg >= 0.0) ? 1.0 : exp(arg);
+                if (uniform_real_distribution<double>(0, 1)(solver.rng) < pAcc) {
+                    std::swap(ladderT[a], ladderT[b]);
+                    std::swap(order[p], order[p + 1]);
+                    swaps++;
+                }
+            }
+            // Cold half adopts the elite layout when strictly behind it.
+            for (int p = 0; p < ptR / 2; p++) {
+                int i = order[p];
+                if (i == elite) continue;
+                if (rep[i]->bestK > rep[elite]->bestK ||
+                    (rep[i]->bestK == rep[elite]->bestK &&
+                     rep[i]->bestX > rep[elite]->bestX)) {
+                    rep[i]->bestPos = rep[elite]->bestPos;
+                    rep[i]->bestK   = rep[elite]->bestK;
+                    rep[i]->bestX   = rep[elite]->bestX;
+                    rep[i]->restoreBest();
+                }
+            }
+            cerr << "[pt] round " << r << " elite=r" << elite
+                 << " k=" << rep[elite]->bestK << " X=" << rep[elite]->bestX
+                 << " swaps=" << swaps << "\n";
+        }
+
+        int best = 0;
+        for (int i = 1; i < ptR; i++)
+            if (rep[i]->bestK < rep[best]->bestK ||
+                (rep[i]->bestK == rep[best]->bestK &&
+                 rep[i]->bestX < rep[best]->bestX))
+                best = i;
+        SAkGD& win = *rep[best];
+        win.restoreBest();
+        int veFinal = win.findVertexEdgeOverlapFast();
+        if (veFinal >= 0) {
+            cerr << "ERROR: best layout has vertex-edge overlap (vertex "
+                 << veFinal << ").\n";
+            return 3;
+        }
+        cerr << "Final best: k=" << win.bestK << " totalX=" << win.bestX
+             << "  (replica " << best << ")\n";
+        cerr << "Writing: " << outputFile << "\n";
+        writeGraph(outputFile, g, win.bestPos);
+        win.curPhase = 3;
+        win.writeStatus(0, 0, 0, "done");
+        return 0;
+    }
+
     solver.setup(g);
     int veInit = solver.findVertexEdgeOverlapFast();
     cerr << "Initial: k=" << solver.kVal
